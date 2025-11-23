@@ -75,6 +75,13 @@ class NavRewardsCfg(LocomotionVelocityRoughEnvCfg.RewardsCfg):
         params={"asset_cfg": SceneEntityCfg("robot")}
     )
 
+    # Add Flat Orientation Reward
+    flat_orientation_l2 = mdp.RewardTermCfg(
+        func=mdp.flat_orientation_l2,
+        weight=-0.5,
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
+
     # MILESTONE 4: Add Progress to Goal Rewards
     # progress_to_goal = mdp.RewardTermCfg(
     #     func=custom_rewards.progress_to_goal,
@@ -143,6 +150,28 @@ class NavCommandsCfg(LocomotionVelocityRoughEnvCfg.CommandsCfg):
     # )
 
 
+# Early termination config (if the bot flips over)
+@configclass
+class NavTerminationsCfg(LocomotionVelocityRoughEnvCfg.TerminationsCfg):
+    """We extend terminations to add the flip-over check."""
+    
+    # 1. Keep Time Out (Inherited, but good to be explicit)
+    time_out = mdp.TerminationTermCfg(func=mdp.time_out, time_out=True)
+    
+    # 2. Base Contact (Fall detection)
+    base_contact = mdp.TerminationTermCfg(
+        func=mdp.illegal_contact,
+        # NOTE: Go2 body name is usually "base", not "trunk"
+        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="base"), "threshold": 1.0}
+    )
+
+    # 3. [NEW] Bad Orientation (Reset if pitch/roll > 1.5 rads / ~86 deg)
+    bad_orientation = mdp.TerminationTermCfg(
+        func=mdp.bad_orientation,
+        params={"asset_cfg": SceneEntityCfg("robot"), "limit_angle": 1.5}
+    )
+
+
 ##
 # The Main Environment Class
 ##
@@ -154,6 +183,7 @@ class UnitreeGo2RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
     observations: NavObservationsCfg = NavObservationsCfg()
     rewards: NavRewardsCfg = NavRewardsCfg()
     commands: NavCommandsCfg = NavCommandsCfg()
+    terminations: NavTerminationsCfg = NavTerminationsCfg()
 
     def __post_init__(self):
         super().__post_init__()
