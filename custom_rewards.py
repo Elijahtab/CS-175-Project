@@ -1,6 +1,6 @@
 import torch
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.utils.math import euler_xyz_from_quat, wrap_to_pi, quat_rotate_inverse
+from isaaclab.utils.math import euler_xyz_from_quat, wrap_to_pi, quat_apply_inverse
 import isaaclab_tasks.manager_based.locomotion.velocity.config.go2_nav.custom_obs as custom_obs
 
 
@@ -164,46 +164,51 @@ def track_commanded_height_exp(env, command_name: str, asset_cfg: SceneEntityCfg
     return torch.exp(-error / (std**2))
 
 
-def track_feet_clearance_exp(env, command_name: str, asset_cfg: SceneEntityCfg):
+def track_feet_clearance_exp(
+    env,
+    command_name: str,
+    asset_cfg: SceneEntityCfg,
+    sensor_cfg: SceneEntityCfg,
+    sigma: float = 0.01,
+    swing_vel_thresh: float = 0.1,
+):
     """
-    Reward for matching the commanded foot height during swing phase.
-    Only applies when the foot is moving effectively (velocity > 0.1).
-    """
-    # 1. Get the Command (Index 2 in our [Height, Freq, Clearance] vector)
-    # Target is usually [0.05m to 0.20m]
-    gait_cmd = env.command_manager.get_command(command_name)
-    target_clearance = gait_cmd[:, 2] 
+    Reward for matching commanded foot clearance (command[2]) relative to local ground.
 
-    # 2. Get Foot Positions (Z axis) relative to current ground
+    - Uses a RayCaster (e.g. 'height_scanner') to estimate ground height.
+    - Applies exp(-error / sigma) only on swinging feet.
+    """
+    # 1. Command: [height, freq, clearance]
+    gait_cmd = env.command_manager.get_command(command_name)  # (num_envs, 3)
+    target_clearance = gait_cmd[:, 2]                         # (num_envs,)
+
+    # 2. Foot positions
     robot = env.scene[asset_cfg.name]
-    foot_pos_w = robot.data.body_pos_w[:, asset_cfg.body_ids, 2] # (Num_Envs, 4)
-    
-    # Get terrain height under each foot
-    foot_pos_xy = robot.data.body_pos_w[:, asset_cfg.body_ids, :2]
-    # Handle flat vs rough terrain
-    if env.scene.terrain.cfg.terrain_type == "plane":
-        terrain_height = torch.zeros_like(foot_pos_w)
-    else:
-        # Flatten to query terrain, then reshape back
-        # Note: This query can be expensive; optimized implementations use a proxy.
-        # For now, we assume standard height scan or approximate with base Z.
-        # A faster proxy is often: current_foot_z - base_z + nominal_base_height
-        terrain_height = env.scene.terrain.terrain_height_at_pos(
-            foot_pos_xy.reshape(-1, 2)
-        ).view(env.num_envs, -1)
+    # positions of the selected bodies (feet) in world frame: (num_envs, num_feet, 3)
+    foot_pos_w = robot.data.body_pos_w[:, asset_cfg.body_ids, :]
+    foot_z = foot_pos_w[..., 2]  # (num_envs, num_feet)
 
-    current_clearance = foot_pos_w - terrain_height
+    # 3. Ground height from height scanner (RayCaster)
+    sensor = env.scene[sensor_cfg.name]
+    # ray_hits_w: (num_envs, num_rays, 3)
+    ground_z = torch.mean(sensor.data.ray_hits_w[..., 2], dim=1)  # (num_envs,)
 
-    # 3. Calculate Error (Only penalize if BELOW target)
-    # We want clearance >= target. If clearance > target, error = 0.
-    target_expanded = target_clearance.unsqueeze(1).repeat(1, 4)
-    error = torch.square(torch.clamp(target_expanded - current_clearance, min=0.0))
+    # clearance = foot_z - ground_z
+    clearance = foot_z - ground_z.unsqueeze(1)  # broadcast: (num_envs, num_feet)
 
-    # 4. Mask: Only apply to feet that are SWINGING (velocity > threshold)
-    foot_vel = torch.norm(robot.data.body_lin_vel_w[:, asset_cfg.body_ids, :], dim=-1)
-    is_swinging = foot_vel > 0.1 # Heuristic: moving feet are swinging
-    
-    reward = torch.sum(torch.exp(-error / 0.01) * is_swinging, dim=1)
+    # 4. Error (only when below target)
+    target_expand = target_clearance.unsqueeze(1)  # (num_envs, 1)
+    below_target = torch.clamp(target_expand - clearance, min=0.0)
+    error = below_target**2  # (num_envs, num_feet)
+
+    # 5. Swing mask (feet moving in world)
+    foot_vel = torch.norm(robot.data.body_lin_vel_w[:, asset_cfg.body_ids, :], dim=-1)  # (num_envs, num_feet)
+    is_swinging = (foot_vel > swing_vel_thresh).float()
+
+    # 6. Exponential kernel + sum across feet
+    rew_per_foot = torch.exp(-error / sigma) * is_swinging
+    reward = torch.sum(rew_per_foot, dim=1)  # (num_envs,)
+
     return reward
 
 
@@ -250,7 +255,7 @@ def roll_pitch_penalty(env, asset_cfg: SceneEntityCfg):
     # The gravity vector in World frame is [0, 0, -1]
     # We rotate it into the Robot's Body frame
     gravity_vec_w = torch.tensor([0.0, 0.0, -1.0], device=env.device).repeat(env.num_envs, 1)
-    projected_gravity_b = quat_rotate_inverse(robot.data.root_quat_w, gravity_vec_w)
+    projected_gravity_b = quat_apply_inverse(robot.data.root_quat_w, gravity_vec_w)
     
     # If perfectly flat, projected_gravity_b should be [0, 0, -1]
     # The x and y components represent roll/pitch tilt

@@ -53,7 +53,7 @@ def goal_relative_target(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> t
     ], dim=-1)
 
 
-def placeholder_lidar(env: ManagerBasedRLEnv) -> torch.Tensor:
+def placeholder_lidar(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     """
     Returns random noise to occupy the 64 inputs reserved for Lidar.
     Range: [0.0, 1.0] to mimic normalized distance.

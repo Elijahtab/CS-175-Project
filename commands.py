@@ -1,221 +1,260 @@
 from dataclasses import dataclass
 import torch
+from collections.abc import Sequence
 from isaaclab.managers import CommandTerm, CommandTermCfg
 from isaaclab.markers import VisualizationMarkers
-from isaaclab.markers.config import BLUE_SPHERE_MARKER_CFG  # or your custom marker
+# from isaaclab.markers.config import BLUE_SPHERE_MARKER_CFG  # or your custom marker
 from isaaclab.utils import configclass
+
+# Use the same mdp module as the base configs
+import isaaclab.envs.mdp as mdp
 
 
 class GaitParamCommand(CommandTerm):
     """
     Generates randomized gait parameters:
-    [0] Body Height (e.g., -0.05 to +0.05 from default)
-    [1] Step Frequency (e.g., 2.0Hz to 4.0Hz)
-    [2] Foot Clearance (e.g., 0.05m to 0.15m)
+    [0] Body Height offset (m)
+    [1] Step Frequency (Hz)
+    [2] Foot Clearance (m)
     """
-    def __init__(self, cfg, env):
-        super().__init__(cfg, env)
-        # Define the ranges for your 3 new inputs
-        self.height_range = (-0.1, 0.1) # Offset from nominal
-        self.freq_range = (2.0, 4.0)    # Hz
-        self.clearance_range = (0.05, 0.20) # Meters
 
-    def _resample_command(self, env_ids: torch.Tensor):
-        """Called when the environment resets or the timer expires."""
-        # Create a tensor of shape (num_reset_envs, 3)
-        command = torch.zeros(len(env_ids), 3, device=self.device)
-        
-        # 1. Randomize Height Offset
-        command[:, 0].uniform_(*self.height_range)
-        
-        # 2. Randomize Frequency
-        command[:, 1].uniform_(*self.freq_range)
-        
-        # 3. Randomize Clearance
-        command[:, 2].uniform_(*self.clearance_range)
-        
-        return command
-    
+    def __init__(self, cfg: "GaitParamCommandCfg", env):
+        super().__init__(cfg, env)
+
+        # Pull ranges from cfg so they can be overridden by Hydra/YAML
+        r = cfg.ranges
+        self.height_range = r.height
+        self.freq_range = r.freq
+        self.clearance_range = r.clearance
+
+        # Internal command buffer (num_envs, 3)
+        self._command = torch.zeros(self.num_envs, 3, device=self.device)
+
+    # ---- required abstract property ---------------------------------
+    @property
+    def command(self) -> torch.Tensor:
+        """The command tensor. Shape: (num_envs, 3)."""
+        return self._command
+
+    # ---- abstract methods required by CommandTerm -------------------
+    def _resample_command(self, env_ids: Sequence[int]):
+        """Resample the command for the specified envs (called on reset / resample)."""
+        if len(env_ids) == 0:
+            return
+
+        cmd = self._command
+
+        # 0: Height offset
+        cmd[env_ids, 0].uniform_(*self.height_range)
+        # 1: Step frequency
+        cmd[env_ids, 1].uniform_(*self.freq_range)
+        # 2: Foot clearance
+        cmd[env_ids, 2].uniform_(*self.clearance_range)
+
+    def _update_command(self):
+        """
+        Update the command every step.
+
+        For piecewise-constant commands (only change on resample), this can be a no-op.
+        If later you want to e.g. low-pass filter, you’d do it here.
+        """
+        pass
+
     def _update_metrics(self):
-        pass # No specific metrics needed for now
+        """Optional: log metrics if you care. For now, nothing."""
+        # Example if you want later:
+        # self.metrics.setdefault("height_mean", torch.zeros(self.num_envs, device=self.device))
+        # self.metrics["height_mean"] += self._command[:, 0]
+        pass
+
 
 @configclass
-class GaitParamCommandCfg(mdp.UniformVelocityCommandCfg):
+class GaitParamCommandCfg(CommandTermCfg):
     """Configuration for the gait parameter command."""
-    class_type = GaitParamCommand
-    resampling_time_range = (10.0, 10.0) # Resample every 10 seconds
-    debug_vis = False
+    class_type: type = GaitParamCommand
+
+    # how often to resample
+    resampling_time_range: tuple[float, float] = (10.0, 10.0)
+    debug_vis: bool = False
+
+    @configclass
+    class Ranges:
+        """Uniform ranges for gait parameters."""
+        height: tuple[float, float] = (-0.1, 0.1)   # m offset from nominal
+        freq: tuple[float, float] = (2.0, 4.0)      # Hz
+        clearance: tuple[float, float] = (0.05, 0.20)  # m
+
+    ranges: Ranges = Ranges()
 
 
+# # 1. The Implementation Class (Logic)
+# class GoalCommand(CommandTerm):
+#     """
+#     Generates a random (X,Y) goal within a radius.
+#     """
+#     cfg: "GoalCommandCfg"
 
-# 1. The Implementation Class (Logic)
-class GoalCommand(CommandTerm):
-    """
-    Generates a random (X,Y) goal within a radius.
-    """
-    cfg: "GoalCommandCfg"
+#     def __init__(self, cfg: CommandTermCfg, env):
+#         super().__init__(cfg, env)
+#         # Create a visualization marker
+#         self.marker = VisualizationMarkers(cfg.visualizer_cfg)
 
-    def __init__(self, cfg: CommandTermCfg, env):
-        super().__init__(cfg, env)
-        # Create a visualization marker
-        self.marker = VisualizationMarkers(cfg.visualizer_cfg)
+#     def _resample_command(self, env_ids):
+#         """
+#         Called when the timer runs out or robot reaches goal.
+#         """
+#         # Sample Random Radius (1m to 5m)
+#         r = torch.empty(len(env_ids), device=self.device).uniform_(1.0, 5.0)
+#         theta = torch.empty(len(env_ids), device=self.device).uniform_(0, 2 * 3.14159)
 
-    def _resample_command(self, env_ids):
-        """
-        Called when the timer runs out or robot reaches goal.
-        """
-        # Sample Random Radius (1m to 5m)
-        r = torch.empty(len(env_ids), device=self.device).uniform_(1.0, 5.0)
-        theta = torch.empty(len(env_ids), device=self.device).uniform_(0, 2 * 3.14159)
+#         self.command[env_ids, 0] = r * torch.cos(theta)  # Goal X
+#         self.command[env_ids, 1] = r * torch.sin(theta)  # Goal Y
+#         self.command[env_ids, 2] = 0.0  # Heading (optional)
 
-        self.command[env_ids, 0] = r * torch.cos(theta)  # Goal X
-        self.command[env_ids, 1] = r * torch.sin(theta)  # Goal Y
-        self.command[env_ids, 2] = 0.0  # Heading (optional)
+#     def _update_command(self, dt: float):
+#         """
+#         Called every step to update visuals.
+#         """
+#         if self.cfg.debug_vis:
+#             self.marker.visualize(self.command[:, :3])
 
-    def _update_command(self, dt: float):
-        """
-        Called every step to update visuals.
-        """
-        if self.cfg.debug_vis:
-            self.marker.visualize(self.command[:, :3])
+#     def _update_metrics(self):
+#         # not using custom metrics
+#         return {}
 
-    def _update_metrics(self):
-        # not using custom metrics
-        return {}
+#     # ------------------------------------------------------------------
+#     # INTERNAL IMPLEMENTATION
+#     # ------------------------------------------------------------------
 
-    # ------------------------------------------------------------------
-    # INTERNAL IMPLEMENTATION
-    # ------------------------------------------------------------------
+#     def __init__(self, cfg: "GoalCommandCfg", env):
+#         super().__init__(cfg, env)
 
-    def __init__(self, cfg: "GoalCommandCfg", env):
-        super().__init__(cfg, env)
+#         self._device = self._env.device
+#         self._num_envs = self._env.num_envs
 
-        self._device = self._env.device
-        self._num_envs = self._env.num_envs
+#         # (x, y, heading) in *local* env frame
+#         self._command_tensor = torch.zeros(self._num_envs, 3, device=self._device)
+#         self._time_left = torch.zeros(self._num_envs, device=self._device)
 
-        # (x, y, heading) in *local* env frame
-        self._command_tensor = torch.zeros(self._num_envs, 3, device=self._device)
-        self._time_left = torch.zeros(self._num_envs, device=self._device)
+#         # for “was I externally overwritten?” debugging
+#         self._prev_command = self._command_tensor.clone()
 
-        # for “was I externally overwritten?” debugging
-        self._prev_command = self._command_tensor.clone()
+#         # Optional visual marker
+#         self._marker = VisualizationMarkers(cfg.visualizer_cfg) if cfg.debug_vis else None
 
-        # Optional visual marker
-        self._marker = VisualizationMarkers(cfg.visualizer_cfg) if cfg.debug_vis else None
+#         print("=== USING CUSTOM GOAL COMMAND ===")
 
-        print("=== USING CUSTOM GOAL COMMAND ===")
+#         # Initial sample for all envs
+#         env_ids = torch.arange(self._num_envs, device=self._device)
+#         self._initial_resample(env_ids)
 
-        # Initial sample for all envs
-        env_ids = torch.arange(self._num_envs, device=self._device)
-        self._initial_resample(env_ids)
+#     # ------------------------------------------------------------------
 
-    # ------------------------------------------------------------------
+#     def _initial_resample(self, env_ids: torch.Tensor):
+#         """Used only at construction time."""
+#         n = env_ids.numel()
+#         if n == 0:
+#             return
 
-    def _initial_resample(self, env_ids: torch.Tensor):
-        """Used only at construction time."""
-        n = env_ids.numel()
-        if n == 0:
-            return
+#         r = torch.empty(n, device=self._device).uniform_(*self.cfg.radius_range)
+#         theta = torch.empty(n, device=self._device).uniform_(-math.pi, math.pi)
+#         heading = torch.empty(n, device=self._device).uniform_(-math.pi, math.pi)
 
-        r = torch.empty(n, device=self._device).uniform_(*self.cfg.radius_range)
-        theta = torch.empty(n, device=self._device).uniform_(-math.pi, math.pi)
-        heading = torch.empty(n, device=self._device).uniform_(-math.pi, math.pi)
+#         self._command_tensor[env_ids, 0] = r * torch.cos(theta)
+#         self._command_tensor[env_ids, 1] = r * torch.sin(theta)
+#         self._command_tensor[env_ids, 2] = heading
 
-        self._command_tensor[env_ids, 0] = r * torch.cos(theta)
-        self._command_tensor[env_ids, 1] = r * torch.sin(theta)
-        self._command_tensor[env_ids, 2] = heading
+#         self._time_left[env_ids] = torch.empty(n, device=self._device).uniform_(
+#             *self.cfg.resampling_time_range
+#         )
 
-        self._time_left[env_ids] = torch.empty(n, device=self._device).uniform_(
-            *self.cfg.resampling_time_range
-        )
+#         self._visualize()
 
-        self._visualize()
+#     def _timer_resample(self, env_ids: torch.Tensor):
+#         """Timer-based resampling. Only called when time_left <= 0."""
+#         n = env_ids.numel()
+#         if n == 0:
+#             return
 
-    def _timer_resample(self, env_ids: torch.Tensor):
-        """Timer-based resampling. Only called when time_left <= 0."""
-        n = env_ids.numel()
-        if n == 0:
-            return
+#         r = torch.empty(n, device=self._device).uniform_(*self.cfg.radius_range)
+#         theta = torch.empty(n, device=self._device).uniform_(-math.pi, math.pi)
+#         heading = torch.empty(n, device=self._device).uniform_(-math.pi, math.pi)
 
-        r = torch.empty(n, device=self._device).uniform_(*self.cfg.radius_range)
-        theta = torch.empty(n, device=self._device).uniform_(-math.pi, math.pi)
-        heading = torch.empty(n, device=self._device).uniform_(-math.pi, math.pi)
+#         self._command_tensor[env_ids, 0] = r * torch.cos(theta)
+#         self._command_tensor[env_ids, 1] = r * torch.sin(theta)
+#         self._command_tensor[env_ids, 2] = heading
 
-        self._command_tensor[env_ids, 0] = r * torch.cos(theta)
-        self._command_tensor[env_ids, 1] = r * torch.sin(theta)
-        self._command_tensor[env_ids, 2] = heading
+#         self._time_left[env_ids] = torch.empty(n, device=self._device).uniform_(
+#             *self.cfg.resampling_time_range
+#         )
 
-        self._time_left[env_ids] = torch.empty(n, device=self._device).uniform_(
-            *self.cfg.resampling_time_range
-        )
+#     # ------------------------------------------------------------------
 
-    # ------------------------------------------------------------------
+#     def _visualize(self):
+#         if not self._marker:
+#             return
 
-    def _visualize(self):
-        if not self._marker:
-            return
+#         # Local command (N, 3)
+#         local = self._command_tensor
 
-        # Local command (N, 3)
-        local = self._command_tensor
+#         # Env origins from IsaacLab (N, 3)
+#         env_origins = self._env.scene.env_origins.to(self._device)
 
-        # Env origins from IsaacLab (N, 3)
-        env_origins = self._env.scene.env_origins.to(self._device)
+#         # Convert to world frame
+#         world = torch.zeros(self._num_envs, 3, device=self._device)
+#         world[:, :2] = local[:, :2] + env_origins[:, :2]
+#         world[:, 2] = 0.3   # fixed Z height
 
-        # Convert to world frame
-        world = torch.zeros(self._num_envs, 3, device=self._device)
-        world[:, :2] = local[:, :2] + env_origins[:, :2]
-        world[:, 2] = 0.3   # fixed Z height
+#         self._marker.visualize(world)
 
-        self._marker.visualize(world)
+#     # ------------------------------------------------------------------
 
-    # ------------------------------------------------------------------
+#     def _compute(self, dt: float):
+#         # Debug: timer should start big and count down slowly
+#         # print("Before countdown, time_left[:10]:", self._time_left[:10])
 
-    def _compute(self, dt: float):
-        # Debug: timer should start big and count down slowly
-        # print("Before countdown, time_left[:10]:", self._time_left[:10])
+#         # countdown
+#         self._time_left -= dt
 
-        # countdown
-        self._time_left -= dt
+#         # resample only when timer hits zero
+#         env_ids = torch.nonzero(self._time_left <= 0.0, as_tuple=False).squeeze(-1)
+#         if env_ids.numel() > 0:
+#             # print("Resampling for envs:", env_ids)
+#             self._timer_resample(env_ids)
 
-        # resample only when timer hits zero
-        env_ids = torch.nonzero(self._time_left <= 0.0, as_tuple=False).squeeze(-1)
-        if env_ids.numel() > 0:
-            # print("Resampling for envs:", env_ids)
-            self._timer_resample(env_ids)
+#         # debug: detect external overwrites (shouldn’t happen)
+#         #if torch.any(torch.ne(self._prev_command, self._command_tensor)):
+#         #    comment this out once stable if it’s spammy
+#         #    print("Command changed (by timer or something else). Command[0]:", self._command_tensor[0])
+#         self._prev_command = self._command_tensor.clone()
 
-        # debug: detect external overwrites (shouldn’t happen)
-        #if torch.any(torch.ne(self._prev_command, self._command_tensor)):
-        #    comment this out once stable if it’s spammy
-        #    print("Command changed (by timer or something else). Command[0]:", self._command_tensor[0])
-        self._prev_command = self._command_tensor.clone()
+#         # update marker positions
+#         self._visualize()
 
-        # update marker positions
-        self._visualize()
+#         # === Convert goal direction → velocity command ===
 
-        # === Convert goal direction → velocity command ===
+#         goal_xy = self._command_tensor[:, :2]   # local frame
+#         goal_dist = torch.norm(goal_xy, dim=1) + 1e-6
+#         goal_dir = goal_xy / goal_dist.unsqueeze(1)
 
-        goal_xy = self._command_tensor[:, :2]   # local frame
-        goal_dist = torch.norm(goal_xy, dim=1) + 1e-6
-        goal_dir = goal_xy / goal_dist.unsqueeze(1)
+#         desired_vx = goal_dir[:, 0] * 0.6        # 0.6 m/s forward
+#         desired_vy = goal_dir[:, 1] * 0.2        # small sideways allowed
+#         desired_yaw = self._command_tensor[:, 2] # heading target from goal
 
-        desired_vx = goal_dir[:, 0] * 0.6        # 0.6 m/s forward
-        desired_vy = goal_dir[:, 1] * 0.2        # small sideways allowed
-        desired_yaw = self._command_tensor[:, 2] # heading target from goal
-
-        # write into base_velocity command (through command manager)
-        #self._env.command_manager.commands["base_velocity"].set_velocities(
-        #    desired_vx, desired_vy, desired_yaw
-        #)
+#         # write into base_velocity command (through command manager)
+#         #self._env.command_manager.commands["base_velocity"].set_velocities(
+#         #    desired_vx, desired_vy, desired_yaw
+#         #)
 
 
-# 2. The Configuration Class (Settings)
-@dataclass
-class GoalCommandCfg(CommandTermCfg):
-    # [CRITICAL] This links the Config to the Logic class above!
-    class_type: type = GoalCommand
+# # 2. The Configuration Class (Settings)
+# @dataclass
+# class GoalCommandCfg(CommandTermCfg):
+#     # [CRITICAL] This links the Config to the Logic class above!
+#     class_type: type = GoalCommand
 
-    # Default settings
-    resampling_time_range: tuple[float, float] = (5.0, 10.0)
-    visualizer_cfg: object = BLUE_SPHERE_MARKER_CFG
-    debug_vis: bool = True
-    num_commands: int = 3
+#     # Default settings
+#     resampling_time_range: tuple[float, float] = (5.0, 10.0)
+#     visualizer_cfg: object = BLUE_SPHERE_MARKER_CFG
+#     debug_vis: bool = True
+#     num_commands: int = 3

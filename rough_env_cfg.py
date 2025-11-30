@@ -28,51 +28,10 @@ from isaaclab_assets.robots.unitree import UNITREE_GO2_CFG
 
 # IMPORT CUSTOM MODULES
 from . import custom_obs, custom_rewards, commands
+import math
 
 
 
-@configclass
-class NavRewardsCfg(BaseRewardsCfg):
-    """Reward config with milestone-gated nav + locomotion terms."""
-
-    base_height_err: RewTerm = RewTerm(
-        func=custom_rewards.base_height_error,
-        # penalty → negative weight
-        weight=-2.0,
-        params={
-            "asset_cfg": SceneEntityCfg("robot"),
-            # target CoM height in meters for Go2 standing
-            "target_height": 0.38,
-        },
-    )
-
-    # Clearance: "Lift feet when I say lift"
-    track_foot_clearance = RewTerm(
-        func=custom_rewards.track_feet_clearance_exp,
-        weight=1.0,
-        params={
-            "command_name": "gait_params", 
-            # Note: Point this to the FEET bodies, not the whole robot
-            "asset_cfg": SceneEntityCfg("robot", body_names=".*_foot") 
-        }
-    )
-
-    # CAN WE DO THIS?
-    # TRACK HEIGHT (Dynamic)
-    # track_height = RewTerm(
-    #     func=custom_rewards.track_commanded_height_exp,
-    #     weight=2.0, # Positive weight because we are using exp() reward
-    #     params={
-    #         "command_name": "gait_params", # Must match the name in CommandsCfg
-    #         "asset_cfg": SceneEntityCfg("robot"),
-    #     },
-    # )
-
-    roll_pitch_pen: RewTerm = RewTerm(
-        func=custom_rewards.roll_pitch_penalty,
-        weight=-1.0,
-        params={"asset_cfg": SceneEntityCfg("robot")},
-    )
 
 
 @configclass
@@ -97,8 +56,54 @@ class NavCommandsCfg(BaseCommandsCfg):
     )
     
     # NEW GAIT COMMANDS (Size: 3) [Height, Freq, Clearance]
-    gait_params = GaitParamCommandCfg(asset_name="robot")
-    
+    gait_params: commands.GaitParamCommandCfg = commands.GaitParamCommandCfg()
+
+
+
+@configclass
+class NavRewardsCfg(BaseRewardsCfg):
+    """Reward config with milestone-gated nav + locomotion terms."""
+
+    base_height_err = RewTerm(
+        func=mdp.base_height_l2,
+        weight=-2.0,
+        params={
+            "target_height": 0.38,  # world-frame target, or nominal above-ray height
+            "asset_cfg": SceneEntityCfg("robot"),
+            # If you have a downward raycaster / height scanner:
+            "sensor_cfg": SceneEntityCfg("height_scanner"),
+        },
+    )
+
+    # Clearance: "Lift feet when I say lift"
+    track_foot_clearance = RewTerm(
+        func=custom_rewards.track_feet_clearance_exp,
+        weight=1.0,
+        params={
+            "command_name": "gait_params",
+            "asset_cfg":  SceneEntityCfg("robot", body_names=".*_foot"),
+            "sensor_cfg": SceneEntityCfg("height_scanner"),
+            "sigma": 0.01,
+            "swing_vel_thresh": 0.1,
+        },
+    )
+
+    # CAN WE DO THIS?
+    # TRACK HEIGHT (Dynamic)
+    # track_height = RewTerm(
+    #     func=custom_rewards.track_commanded_height_exp,
+    #     weight=2.0, # Positive weight because we are using exp() reward
+    #     params={
+    #         "command_name": "gait_params", # Must match the name in CommandsCfg
+    #         "asset_cfg": SceneEntityCfg("robot"),
+    #     },
+    # )
+
+    # roll_pitch_pen: RewTerm = RewTerm(
+    #     func=custom_rewards.roll_pitch_penalty,
+    #     weight=-1.0,
+    #     params={"asset_cfg": SceneEntityCfg("robot")},
+    # )
 
 
 # ======================================================================
@@ -140,10 +145,10 @@ class NavObservationsCfg(BaseObservationsCfg):
     @configclass
     class PolicyCfg(BaseObservationsCfg.PolicyCfg):
 
-        lidar: ObsTerm = ObsTerm(
-            func=custom_obs.placeholder_lidar,
-            params={"sensor_cfg": SceneEntityCfg("lidar")},
-        )
+        # lidar: ObsTerm = ObsTerm(
+        #     func=custom_obs.placeholder_lidar,
+        #     params={"sensor_cfg": SceneEntityCfg("lidar")},
+        # )
 
         # 1. Velocity Inputs (Size 3)
         velocity_commands = ObsTerm(
@@ -151,10 +156,10 @@ class NavObservationsCfg(BaseObservationsCfg):
             params={"command_name": "base_velocity"}
         )
 
-        # 2. Gait Parameter Inputs (Size 3)
+        # gait commands (dim 3: height, freq, clearance)
         gait_commands = ObsTerm(
-            func=mdp.generated_commands, 
-            params={"command_name": "gait_params"} # Matches the name in CommandsCfg
+            func=mdp.generated_commands,
+            params={"command_name": "gait_params"},
         )
 
         def __post_init__(self):
@@ -212,8 +217,8 @@ class UnitreeGo2RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
 
         # rewards
         self.rewards.feet_air_time.params["sensor_cfg"].body_names = ".*_foot"
-        self.rewards.feet_air_time.weight = 0.05
-        self.rewards.undesired_contacts = -1
+        self.rewards.feet_air_time.weight = 0.1
+        self.rewards.undesired_contacts = None
         self.rewards.dof_torques_l2.weight = -0.0002
         self.rewards.track_lin_vel_xy_exp.weight = 1.5
         self.rewards.track_ang_vel_z_exp.weight = 0.75

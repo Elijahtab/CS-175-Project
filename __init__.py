@@ -2,7 +2,7 @@ import gymnasium as gym
 from . import agents
 
 # Import cfgs explicitly (makes introspection safer)
-from .flat_env_cfg import UnitreeGo2FlatEnvCfg
+# from .flat_env_cfg import UnitreeGo2FlatEnvCfg
 from .rough_env_cfg import UnitreeGo2RoughEnvCfg
 
 
