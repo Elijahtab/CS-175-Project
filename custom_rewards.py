@@ -1,7 +1,7 @@
 import torch
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils.math import euler_xyz_from_quat, wrap_to_pi
-import isaaclab_tasks.manager_based.locomotion.velocity.config.go2_nav.custom_obs as custom_obs
+from . import custom_obs
 
 
 # ---------------------------------------------------------
@@ -24,7 +24,7 @@ def heading_alignment(env, asset_cfg: SceneEntityCfg, command_name):
 
     # reward large when facing goal (cosine smooth)
     return torch.cos(rel)
-    
+
 
 # ---------------------------------------------------------
 # 2. Velocity toward goal (body frame)
@@ -35,7 +35,6 @@ def vel_toward_goal(env, asset_cfg: SceneEntityCfg, command_name):
 
     # direction to goal in body frame
     goal_b = custom_obs.goal_direction_body(env, asset_cfg, command_name)
-
     goal_b = goal_b / (goal_b.norm(dim=1, keepdim=True) + 1e-6)
 
     # dot product = projected velocity toward goal
@@ -62,6 +61,30 @@ def progress_to_goal(env, asset_cfg: SceneEntityCfg, command_name):
 
     reward = dist_prev - dist_now
     env.extras["pg_dist_prev"] = dist_now.clone()
-
     return reward
 
+
+# ---------------------------------------------------------
+# 4. Base height penalty (L2)
+# ---------------------------------------------------------
+def base_height_l2(
+    env,
+    target_height: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    sensor_cfg: SceneEntityCfg | None = None,
+) -> torch.Tensor:
+    """Penalize deviation of robot base height from a target height (L2).
+
+    For flat terrain, we just compare to a fixed target height.
+    For rough terrain, an optional sensor can be used to shift the target.
+    """
+    asset = env.scene[asset_cfg.name]
+
+    if sensor_cfg is not None:
+        sensor = env.scene[sensor_cfg.name]
+        adjusted_target_height = target_height + sensor.data.pos_w[:, 2]
+    else:
+        adjusted_target_height = target_height
+
+    z = asset.data.root_link_pos_w[:, 2]
+    return (z - adjusted_target_height) ** 2
