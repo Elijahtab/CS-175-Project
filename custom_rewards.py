@@ -1,6 +1,6 @@
 import torch
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.utils.math import euler_xyz_from_quat, wrap_to_pi
+from isaaclab.utils.math import euler_xyz_from_quat, wrap_to_pi, quat_rotate_inverse
 import isaaclab_tasks.manager_based.locomotion.velocity.config.go2_nav.custom_obs as custom_obs
 
 
@@ -94,14 +94,117 @@ def ang_vel_tracking_exp(env, asset_cfg: SceneEntityCfg, command_name: str):
     diff = wz_ref - wz
     return torch.exp(-(diff * diff))
 
-
 # 3. Height error (z - z_ref)^2  (use constant z_ref from params)
-def base_height_error(env, asset_cfg: SceneEntityCfg, target_height: float):
-    """Squared error of base height around a fixed target_height."""
+def base_height_error(env, asset_cfg: SceneEntityCfg, target_height: float = 0.38, asset_radius: float = 0.1):
+    """
+    Penalize deviation from target height RELATIVE TO TERRAIN.
+    """
+    # 1. Get Robot Data
     robot = env.scene[asset_cfg.name]
-    z = robot.data.root_pos_w[:, 2]
-    diff = z - target_height
-    return diff * diff  # use NEGATIVE weight to make it a penalty
+
+    #ORIGINAL:
+    # z = robot.data.root_pos_w[:, 2]
+    # diff = z - target_height
+    # return diff * diff  # use NEGATIVE weight to make it a penalty
+
+    #NEW:
+    root_pos_w = robot.data.root_pos_w
+    # 2. Get Terrain Height at Robot's (X, Y)
+    # We query the terrain generator for the height under the robot's center
+    # Note: Requires env.scene.terrain to be active
+    terrain_heights = env.scene.terrain.terrain_height_at_pos(root_pos_w[:, :2])
+    
+    # 3. Calculate Relative Height (Robot Z - Ground Z)
+    # We subtract terrain height to get 'local' height
+    current_height = root_pos_w[:, 2] - terrain_heights
+    
+    # 4. Calculate Error
+    # FUTURE PROOFING: Later, replace 'target_height' with: 
+    # target = env.command_manager.get_command("gait_params")[:, 0]
+    diff = current_height - target_height
+    
+    return torch.square(diff)
+
+
+def track_commanded_height_exp(env, command_name: str, asset_cfg: SceneEntityCfg):
+    """
+    Reward for matching the commanded base height relative to the terrain.
+    Uses an exponential kernel: exp(-error^2 / std^2).
+    """
+    # 1. Get the Command (The "Target")
+    # We fetch the command named 'gait_params'. 
+    # Assumes format: [Body Height, Step Freq, Clearance]
+    # We only want index 0 (Body Height).
+    gait_cmd = env.command_manager.get_command(command_name)
+    target_height_offset = gait_cmd[:, 0] # This is usually an offset, e.g., -0.1m
+    
+    # Define the nominal standing height (The "Zero" point)
+    # You can pass this as a param, or hardcode it if your robot is fixed.
+    nominal_height = 0.38 
+    target_height = nominal_height + target_height_offset
+
+    # 2. Get Current Height (Relative to Terrain)
+    robot = env.scene[asset_cfg.name]
+    root_pos_w = robot.data.root_pos_w
+    
+    # Handle flat ground vs rough terrain cases safely
+    if env.scene.terrain.cfg.terrain_type == "plane":
+        terrain_height = torch.zeros_like(root_pos_w[:, 2])
+    else:
+        terrain_height = env.scene.terrain.terrain_height_at_pos(root_pos_w[:, :2])
+        
+    current_height = root_pos_w[:, 2] - terrain_height
+
+    # 3. Calculate Error
+    error = torch.square(current_height - target_height)
+    
+    # 4. Convert to Reward (Exponential is better for tracking than L2 penalty)
+    # This gives +1.0 for perfect tracking, decaying to 0.0 as error increases.
+    std = 0.05 # Tolerance window (5cm)
+    return torch.exp(-error / (std**2))
+
+
+def track_feet_clearance_exp(env, command_name: str, asset_cfg: SceneEntityCfg):
+    """
+    Reward for matching the commanded foot height during swing phase.
+    Only applies when the foot is moving effectively (velocity > 0.1).
+    """
+    # 1. Get the Command (Index 2 in our [Height, Freq, Clearance] vector)
+    # Target is usually [0.05m to 0.20m]
+    gait_cmd = env.command_manager.get_command(command_name)
+    target_clearance = gait_cmd[:, 2] 
+
+    # 2. Get Foot Positions (Z axis) relative to current ground
+    robot = env.scene[asset_cfg.name]
+    foot_pos_w = robot.data.body_pos_w[:, asset_cfg.body_ids, 2] # (Num_Envs, 4)
+    
+    # Get terrain height under each foot
+    foot_pos_xy = robot.data.body_pos_w[:, asset_cfg.body_ids, :2]
+    # Handle flat vs rough terrain
+    if env.scene.terrain.cfg.terrain_type == "plane":
+        terrain_height = torch.zeros_like(foot_pos_w)
+    else:
+        # Flatten to query terrain, then reshape back
+        # Note: This query can be expensive; optimized implementations use a proxy.
+        # For now, we assume standard height scan or approximate with base Z.
+        # A faster proxy is often: current_foot_z - base_z + nominal_base_height
+        terrain_height = env.scene.terrain.terrain_height_at_pos(
+            foot_pos_xy.reshape(-1, 2)
+        ).view(env.num_envs, -1)
+
+    current_clearance = foot_pos_w - terrain_height
+
+    # 3. Calculate Error (Only penalize if BELOW target)
+    # We want clearance >= target. If clearance > target, error = 0.
+    target_expanded = target_clearance.unsqueeze(1).repeat(1, 4)
+    error = torch.square(torch.clamp(target_expanded - current_clearance, min=0.0))
+
+    # 4. Mask: Only apply to feet that are SWINGING (velocity > threshold)
+    foot_vel = torch.norm(robot.data.body_lin_vel_w[:, asset_cfg.body_ids, :], dim=-1)
+    is_swinging = foot_vel > 0.1 # Heuristic: moving feet are swinging
+    
+    reward = torch.sum(torch.exp(-error / 0.01) * is_swinging, dim=1)
+    return reward
 
 
 # 4. Pose similarity ||q - q_default||^2
@@ -132,10 +235,26 @@ def vertical_vel_penalty(env, asset_cfg: SceneEntityCfg):
 
 # 7. Roll/pitch stabilization penalty (phi^2 + theta^2)
 def roll_pitch_penalty(env, asset_cfg: SceneEntityCfg):
-    """Penalty on roll and pitch of the base."""
+    """
+    Penalty for non-flat base orientation.
+    Optimization: Uses projected gravity instead of Euler angles (faster/safer).
+    """
     robot = env.scene[asset_cfg.name]
-    roll, pitch, _ = euler_xyz_from_quat(robot.data.root_quat_w)
-    return roll * roll + pitch * pitch  # use negative weight
+
+    #ORIGINAL:
+    # roll, pitch, _ = euler_xyz_from_quat(robot.data.root_quat_w)
+    # return roll * roll + pitch * pitch  # use negative weight
+
+
+    #NEW:
+    # The gravity vector in World frame is [0, 0, -1]
+    # We rotate it into the Robot's Body frame
+    gravity_vec_w = torch.tensor([0.0, 0.0, -1.0], device=env.device).repeat(env.num_envs, 1)
+    projected_gravity_b = quat_rotate_inverse(robot.data.root_quat_w, gravity_vec_w)
+    
+    # If perfectly flat, projected_gravity_b should be [0, 0, -1]
+    # The x and y components represent roll/pitch tilt
+    return torch.sum(torch.square(projected_gravity_b[:, :2]), dim=1)
 
 def forward_velocity_bonus(env, asset_cfg):
     robot = env.scene[asset_cfg.name]          # FIX: IsaacLab uses dict-style access

@@ -3,6 +3,49 @@ import torch
 from isaaclab.managers import CommandTerm, CommandTermCfg
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.markers.config import BLUE_SPHERE_MARKER_CFG  # or your custom marker
+from isaaclab.utils import configclass
+
+
+class GaitParamCommand(CommandTerm):
+    """
+    Generates randomized gait parameters:
+    [0] Body Height (e.g., -0.05 to +0.05 from default)
+    [1] Step Frequency (e.g., 2.0Hz to 4.0Hz)
+    [2] Foot Clearance (e.g., 0.05m to 0.15m)
+    """
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
+        # Define the ranges for your 3 new inputs
+        self.height_range = (-0.1, 0.1) # Offset from nominal
+        self.freq_range = (2.0, 4.0)    # Hz
+        self.clearance_range = (0.05, 0.20) # Meters
+
+    def _resample_command(self, env_ids: torch.Tensor):
+        """Called when the environment resets or the timer expires."""
+        # Create a tensor of shape (num_reset_envs, 3)
+        command = torch.zeros(len(env_ids), 3, device=self.device)
+        
+        # 1. Randomize Height Offset
+        command[:, 0].uniform_(*self.height_range)
+        
+        # 2. Randomize Frequency
+        command[:, 1].uniform_(*self.freq_range)
+        
+        # 3. Randomize Clearance
+        command[:, 2].uniform_(*self.clearance_range)
+        
+        return command
+    
+    def _update_metrics(self):
+        pass # No specific metrics needed for now
+
+@configclass
+class GaitParamCommandCfg(mdp.UniformVelocityCommandCfg):
+    """Configuration for the gait parameter command."""
+    class_type = GaitParamCommand
+    resampling_time_range = (10.0, 10.0) # Resample every 10 seconds
+    debug_vis = False
+
 
 
 # 1. The Implementation Class (Logic)
