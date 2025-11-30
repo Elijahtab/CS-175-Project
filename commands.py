@@ -37,10 +37,6 @@ class GoalCommand(CommandTerm):
             self.marker.visualize(self.command[:, :3])
 
     def _update_metrics(self):
-<<<<<<< Updated upstream
-        """Placeholder for newer Isaac Sim versions"""
-        pass
-=======
         # not using custom metrics
         return {}
 
@@ -167,7 +163,6 @@ class GoalCommand(CommandTerm):
         #self._env.command_manager.commands["base_velocity"].set_velocities(
         #    desired_vx, desired_vy, desired_yaw
         #)
->>>>>>> Stashed changes
 
 
 # 2. The Configuration Class (Settings)
