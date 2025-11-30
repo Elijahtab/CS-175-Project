@@ -78,7 +78,7 @@ class NavRewardsCfg(BaseRewardsCfg):
     # Clearance: "Lift feet when I say lift"
     track_foot_clearance = RewTerm(
         func=custom_rewards.track_feet_clearance_exp,
-        weight=1.0,
+        weight=0.3,
         params={
             "command_name": "gait_params",
             "asset_cfg":  SceneEntityCfg("robot", body_names=".*_foot"),
@@ -217,7 +217,7 @@ class UnitreeGo2RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
 
         # rewards
         self.rewards.feet_air_time.params["sensor_cfg"].body_names = ".*_foot"
-        self.rewards.feet_air_time.weight = 0.1
+        self.rewards.feet_air_time.weight = 0.01
         self.rewards.undesired_contacts = None
         self.rewards.dof_torques_l2.weight = -0.0002
         self.rewards.track_lin_vel_xy_exp.weight = 1.5
