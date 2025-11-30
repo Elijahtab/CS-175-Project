@@ -7,7 +7,7 @@ import isaaclab.utils.math as math_utils  # Contains the crucial conversion tool
 # Placeholder function (fills with 0's)
 def goal_relative_placeholder(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
     """Phase 1-3: Returns zeros [num_envs, 3] (Distance, Sin, Cos)"""
-    return torch.zeros((env.num_envs, 3), device=env.device)
+    return torch.rand((env.num_envs, 3), device=env.device)
 
 
 # Actual function once we have our goals

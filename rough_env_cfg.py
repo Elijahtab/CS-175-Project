@@ -86,12 +86,18 @@ class NavObservationsCfg(BaseObservationsCfg):
 
         # ----------------------
         # NAV-SPECIFIC OBS TERMS
-        # ----------------------
+        # ---------------------
+        if TRAINING_MILESTONE <= 3:
 
-        goal_relative: ObsTerm = ObsTerm(
-            func=custom_obs.goal_relative_target,
-            params={"asset_cfg": SceneEntityCfg("robot")},
-        )
+            goal_relative: ObsTerm = ObsTerm(
+                func=custom_obs.goal_relative_placeholder,
+                params={"asset_cfg": SceneEntityCfg("robot")},
+            )
+        else: 
+            goal_relative: ObsTerm = ObsTerm(
+                func=custom_obs.goal_relative_target,
+                params={"asset_cfg": SceneEntityCfg("robot")},
+            )
 
         lidar: ObsTerm = ObsTerm(
             func=custom_obs.placeholder_lidar,
@@ -100,14 +106,6 @@ class NavObservationsCfg(BaseObservationsCfg):
 
         lookahead: ObsTerm = ObsTerm(
             func=custom_obs.lookahead_hint,
-        )
-
-        goal_dir_b: ObsTerm = ObsTerm(
-            func=custom_obs.goal_direction_body,
-            params={
-                "asset_cfg": SceneEntityCfg("robot"),
-                "command_name": "goal_pos",
-            },
         )
 
         def __post_init__(self):
