@@ -17,6 +17,7 @@ Watch
 ```
 (Rename and save the video to the Google Drive)
 
+<<<<<<< Updated upstream
 
 ---- Milestone 2: Drunk walking ----
 
@@ -50,3 +51,14 @@ Under NavRewardsCfg, uncomment the progress to goal and arrival bonus rewards
 At the bottom of post_init(), uncomment this line: "self.rewards.feet_air_time.params["command_name"] = "goal_pos""
 
 Train, watch, record, and save the video.
+=======
+
+RESUME:
+
+ ./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py --task=Isaac-Nav-Go2-v0 --resume --load_run=m2 --checkpoint=model_300.pt --headless
+
+FLAGS:
+--task=Isaac-Nav-Go2-Flat-v0
+
+--num_envs NUM_ENVS
+>>>>>>> Stashed changes
