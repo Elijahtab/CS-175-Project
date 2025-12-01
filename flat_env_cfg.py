@@ -27,17 +27,17 @@ class UnitreeGo2FlatEnvCfg(UnitreeGo2RoughEnvCfg):
                 "asset_cfg": SceneEntityCfg("robot"),
             },
         )
-        # self.rewards.track_cmd_height_flat = RewTerm(
-        #     func=custom_rewards.track_commanded_height_flat,
-        #     weight=1.0,   # tune: 0.5–2.0 is a reasonable range to try
-        #     params={
-        #         "command_name": "gait_params",
-        #         "asset_cfg": SceneEntityCfg("robot"),
-        #         "nominal_height": 0.38,
-        #         "min_offset": 0.02,  # only care when >= 2 cm offset
-        #         "std": 0.05,         # ~5 cm tolerance
-        #     },
-        # )
+        self.rewards.track_cmd_height_flat = RewTerm(
+            func=custom_rewards.track_commanded_height_flat,
+            weight=1.0,   # tune: 0.5–2.0 is a reasonable range to try
+            params={
+                "command_name": "gait_params",
+                "asset_cfg": SceneEntityCfg("robot"),
+                "nominal_height": 0.38,
+                "min_offset": 0.02,  # only care when >= 2 cm offset
+                "std": 0.05,         # ~5 cm tolerance
+            },
+        )
         # change terrain to flat
         self.scene.terrain.terrain_type = "plane"
         self.scene.terrain.terrain_generator = None
@@ -48,6 +48,8 @@ class UnitreeGo2FlatEnvCfg(UnitreeGo2RoughEnvCfg):
         self.curriculum.terrain_levels = None
         #self.rewards.base_height_err = None
         self.rewards.track_foot_clearance = None
+        #JANK ALERT: use this to change height for test
+        #self.commands.gait_params.fixed_height = -0.18
 
 class UnitreeGo2FlatEnvCfg_PLAY(UnitreeGo2FlatEnvCfg):
     def __post_init__(self) -> None:
@@ -62,3 +64,5 @@ class UnitreeGo2FlatEnvCfg_PLAY(UnitreeGo2FlatEnvCfg):
         # remove random pushing event
         self.events.base_external_force_torque = None
         self.events.push_robot = None
+        
+        self.commands.gait_params.fixed_height = -0.08

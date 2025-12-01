@@ -30,6 +30,8 @@ class GaitParamCommand(CommandTerm):
         # Internal command buffer (num_envs, 3)
         self._command = torch.zeros(self.num_envs, 3, device=self.device)
 
+        self.fixed_height = cfg.fixed_height
+
     # ---- required abstract property ---------------------------------
     @property
     def command(self) -> torch.Tensor:
@@ -43,21 +45,51 @@ class GaitParamCommand(CommandTerm):
 
         cmd = self._command
 
-        # Bernoulli gate: only give height command with some probability
-        p_height = 0.3  # 30% of resamples have a non-zero height offset
-        mask = (torch.rand(len(env_ids), device=self.device) < p_height)
+        # Convert env_ids to a tensor of indices on the right device
+        env_ids_t = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
+        n = env_ids_t.shape[0]
 
-        # Default: no height command
-        cmd[env_ids, 0] = 0.0
+        # -----------------------
+        # 0: Height offset (with gating)
+        # -----------------------
+        p_height = 0.3  # 30% of envs get a non-zero height command
 
-        # For selected envs, sample non-zero height
-        active_ids = torch.tensor(env_ids, device=self.device)[mask]
-        if active_ids.numel() > 0:
-            cmd[active_ids, 0].uniform_(*self.height_range)
+        # which envs in this batch will get a non-zero height?
+        height_mask = (torch.rand(n, device=self.device) < p_height).float()
 
-        # Freq and clearance always sampled (or you can gate them similarly)
-        cmd[env_ids, 1].uniform_(*self.freq_range)
-        cmd[env_ids, 2].uniform_(*self.clearance_range)
+        # sample candidate heights
+        height_samples = torch.empty(n, device=self.device).uniform_(*self.height_range)
+
+        # write: height = sample * mask  (others → 0)
+        cmd[env_ids_t, 0] = height_samples * height_mask
+
+        # -----------------------
+        # 1: Step frequency (always sample)
+        # -----------------------
+        freq_samples = torch.empty(n, device=self.device).uniform_(*self.freq_range)
+        cmd[env_ids_t, 1] = freq_samples
+
+        # -----------------------
+        # 2: Foot clearance (always sample)
+        # -----------------------
+        clear_samples = torch.empty(n, device=self.device).uniform_(*self.clearance_range)
+        cmd[env_ids_t, 2] = clear_samples
+
+        # -----------------------
+        # Debug print
+        # -----------------------
+        # with torch.no_grad():
+        #     sample_envs = env_ids_t[:5]
+        #     print(
+        #         "[GaitParamCommand] resample: envs",
+        #         sample_envs.tolist(),
+        #         "height offsets",
+        #         cmd[sample_envs, 0].tolist(),
+        #         "freq",
+        #         cmd[sample_envs, 1].tolist(),
+        #         "clearance",
+        #         cmd[sample_envs, 2].tolist(),
+        #     )
 
     def _update_command(self):
         """
@@ -66,7 +98,12 @@ class GaitParamCommand(CommandTerm):
         For piecewise-constant commands (only change on resample), this can be a no-op.
         If later you want to e.g. low-pass filter, you’d do it here.
         """
-        pass
+        if self.fixed_height is not None:
+            # Hardcode crouch height for all envs
+            self._command[:, 0] = self.fixed_height
+            # Optionally lock freq/clearance as well:
+            # self._command[:, 1] = 3.0    # mid-range frequency
+            # self._command[:, 2] = 0.15   # mid-range clearance
 
     def _update_metrics(self):
         """Optional: log metrics if you care. For now, nothing."""
@@ -84,6 +121,8 @@ class GaitParamCommandCfg(CommandTermCfg):
     # how often to resample
     resampling_time_range: tuple[float, float] = (10.0, 10.0)
     debug_vis: bool = False
+
+    fixed_height: float | None = None
 
     @configclass
     class Ranges:
