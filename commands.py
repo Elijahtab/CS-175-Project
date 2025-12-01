@@ -38,17 +38,25 @@ class GaitParamCommand(CommandTerm):
 
     # ---- abstract methods required by CommandTerm -------------------
     def _resample_command(self, env_ids: Sequence[int]):
-        """Resample the command for the specified envs (called on reset / resample)."""
         if len(env_ids) == 0:
             return
 
         cmd = self._command
 
-        # 0: Height offset
-        cmd[env_ids, 0].uniform_(*self.height_range)
-        # 1: Step frequency
+        # Bernoulli gate: only give height command with some probability
+        p_height = 0.3  # 30% of resamples have a non-zero height offset
+        mask = (torch.rand(len(env_ids), device=self.device) < p_height)
+
+        # Default: no height command
+        cmd[env_ids, 0] = 0.0
+
+        # For selected envs, sample non-zero height
+        active_ids = torch.tensor(env_ids, device=self.device)[mask]
+        if active_ids.numel() > 0:
+            cmd[active_ids, 0].uniform_(*self.height_range)
+
+        # Freq and clearance always sampled (or you can gate them similarly)
         cmd[env_ids, 1].uniform_(*self.freq_range)
-        # 2: Foot clearance
         cmd[env_ids, 2].uniform_(*self.clearance_range)
 
     def _update_command(self):
@@ -82,7 +90,7 @@ class GaitParamCommandCfg(CommandTermCfg):
         """Uniform ranges for gait parameters."""
         height: tuple[float, float] = (-0.1, 0.1)   # m offset from nominal
         freq: tuple[float, float] = (2.0, 4.0)      # Hz
-        clearance: tuple[float, float] = (0.05, 0.20)  # m
+        clearance: tuple[float, float] = (0.1, 0.20)  # m
 
     ranges: Ranges = Ranges()
 

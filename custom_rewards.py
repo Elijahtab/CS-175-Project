@@ -3,40 +3,205 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils.math import euler_xyz_from_quat, wrap_to_pi, quat_apply_inverse
 import isaaclab_tasks.manager_based.locomotion.velocity.config.go2_nav.custom_obs as custom_obs
 
-
-def ground_height_from_scanner(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+def track_commanded_height_flat(
+    env,
+    command_name: str,
+    asset_cfg: SceneEntityCfg,
+    nominal_height: float = 0.38,
+    min_offset: float = 0.02,
+    std: float = 0.05,
+):
     """
-    Returns per-env ground height z using the height_scanner RayCaster.
+    FLAT ENV VERSION: reward matching commanded base height using ONLY base_z.
 
-    - Masks NaN/Inf
-    - Clamps z to a sane range
-    - Averages over all rays per env
+    - Commands come from "gait_params":
+        gait_params[:, 0] = height offset (m) relative to nominal_height.
+    - Terrain is a plane at z=0, so base_z == height above ground.
+    - We only give a reward when |height_offset| >= min_offset
+      (i.e., "this timestep is actually a height task").
 
-    Output: ground_z: (num_envs,)
+    Returns: [num_envs] reward in [0, 1].
+    """
+    robot = env.scene[asset_cfg.name]
+
+    # --- 1. Commanded height offset from gait_params ---
+    gait_cmd = env.command_manager.get_command(command_name)    # (num_envs, 3)
+    height_offset = gait_cmd[:, 0]                              # (num_envs,)
+
+    # When offset is tiny, treat it as "no height task"
+    active = (torch.abs(height_offset) >= min_offset).float()   # (num_envs,)
+
+    # --- 2. Target height above flat ground ---
+    target_height = nominal_height + height_offset              # (num_envs,)
+
+    # On flat plane, ground_z ~ 0, so base_z is the height above ground.
+    base_z = robot.data.root_pos_w[:, 2]                        # (num_envs,)
+
+    # --- 3. Error + exponential kernel ---
+    error = base_z - target_height                              # (num_envs,)
+    err2 = error * error
+
+    # exp(-err^2 / std^2)  → 1 when on target, decays as we move away
+    result = torch.exp(-err2 / (std ** 2))                      # (num_envs,)
+
+    # Only count reward when a meaningful height command is active
+    reward = result * active
+
+    # Safety checks
+    if torch.isnan(reward).any() or torch.isinf(reward).any():
+        print("NaN/Inf in track_commanded_height_flat")
+        raise RuntimeError("NaN/Inf in track_commanded_height_flat")
+
+    return reward
+
+def base_height_l2_flat(
+    env,
+    target_height: float,
+    asset_cfg: SceneEntityCfg,
+):
+    """
+    Flat-ground version:
+    Penalizes being BELOW target_height using world-frame base.z.
+    No sensor / RayCaster needed.
+    """
+    robot = env.scene[asset_cfg.name]
+
+    base_z = robot.data.root_pos_w[:, 2]    # [num_envs]
+    # positive diff means we're too low
+    diff = target_height - base_z
+    below = torch.clamp(diff, min=0.0)
+    rew = below * below                      # >= 0
+
+    if torch.isnan(rew).any() or torch.isinf(rew).any():
+        print("NaN/Inf in base_height_l2_flat")
+        raise RuntimeError("NaN/Inf in base_height_l2_flat")
+
+    return rew
+
+
+def ground_height_from_scanner_safe(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+    """
+    Returns per-env ground height from a RayCaster, with:
+    - NaN/Inf masked
+    - z clamped to a sane band
+    Guaranteed finite output of shape [num_envs].
     """
     sensor = env.scene[sensor_cfg.name]
-    hits = sensor.data.ray_hits_w          # (num_envs, num_rays, 3)
-    hits_z = hits[..., 2]                  # (num_envs, num_rays)
+    hits = sensor.data.ray_hits_w  # (num_envs, num_rays, 3)
 
-    # 1) Mask non-finite
-    finite = torch.isfinite(hits_z)
-    safe_hits_z = hits_z.clone()
-    safe_hits_z[~finite] = 0.0
+    # Mask non-finite
+    finite = torch.isfinite(hits)
+    if (~finite).any():
+        bad_envs = torch.nonzero((~finite).any(dim=1), as_tuple=False).squeeze(-1)
+        print("ground_height_from_scanner_safe: masking non-finite ray hits in envs:", bad_envs)
 
-    # 2) Clamp to avoid absurd values
-    safe_hits_z = torch.clamp(safe_hits_z, -2.0, 2.0)
+        fixed_hits = hits.clone()
+        fixed_hits[~finite] = 0.0
+        hits = fixed_hits
 
-    # 3) Average only over finite rays
-    counts = finite.sum(dim=1).clamp_min(1)           # (num_envs,)
-    ground_z = safe_hits_z.sum(dim=1) / counts        # (num_envs,)
+    # Clamp Z to a plausible band to avoid crazy spikes
+    hits_z = hits[..., 2].clamp(min=-2.0, max=2.0)
 
-    # Sanity check
+    # If some rays are zeroed out, average still stays finite
+    ground_z = hits_z.mean(dim=1)  # (num_envs,)
+
     if torch.isnan(ground_z).any() or torch.isinf(ground_z).any():
-        print("ground_height_from_scanner: non-finite ground_z")
-        raise RuntimeError("ground_height_from_scanner produced non-finite")
+        print("ground_height_from_scanner_safe: still non-finite ground_z")
+        raise RuntimeError("ground_height_from_scanner_safe produced non-finite ground_z")
+
+    # Optionally write back sanitized hits if you want everyone else to see them:
+    sensor.data.ray_hits_w[..., 2] = hits_z
 
     return ground_z
 
+def base_height_l2_safe(
+    env,
+    target_height: float,
+    asset_cfg: SceneEntityCfg,
+    sensor_cfg: SceneEntityCfg,
+):
+    """
+    Same idea as mdp.base_height_l2, but using ground_height_from_scanner_safe.
+    Penalizes (base_height - target_height)^2.
+    """
+    robot = env.scene[asset_cfg.name]
+
+    ground_z = ground_height_from_scanner_safe(env, sensor_cfg)     # [num_envs]
+    current_height = robot.data.root_pos_w[:, 2] - ground_z         # [num_envs]
+
+    error = current_height - target_height
+    rew = error * error
+
+    if torch.isnan(rew).any() or torch.isinf(rew).any():
+        print("NaN/Inf in base_height_l2_safe")
+        raise RuntimeError("NaN/Inf in base_height_l2_safe")
+
+    return rew
+
+
+
+def track_feet_clearance_exp(
+    env,
+    command_name: str,
+    asset_cfg: SceneEntityCfg,
+    sensor_cfg: SceneEntityCfg,
+    sigma: float = 0.01,
+    swing_vel_thresh: float = 0.1,
+    imbalance_coef: float = 0.8,
+):
+    """
+    Real foot-clearance reward using RayCaster terrain height.
+
+    - Command: gait_params[:, 2]  = target clearance (m)
+    - Clearance: foot_z - ground_z_from_scanner
+    - Penalize only when below target, only on swinging feet
+    - Aggregation: reward = mean(rew_per_foot) - imbalance_coef * std(rew_per_foot)
+      (clamped at 0), so one overachieving leg can't hide three lazy ones.
+    """
+    # --- 1. Commanded clearance ---
+    gait_cmd = env.command_manager.get_command(command_name)     # (num_envs, 3)
+    target_clearance = gait_cmd[:, 2]                            # (num_envs,)
+
+    # --- 2. Base + foot positions ---
+    robot = env.scene[asset_cfg.name]
+    foot_pos_w = robot.data.body_pos_w[:, asset_cfg.body_ids, :] # (num_envs, num_feet, 3)
+    foot_z = foot_pos_w[..., 2]                                  # (num_envs, num_feet)
+
+    # --- 3. Terrain height from RayCaster (per env) ---
+    ground_z = ground_height_from_scanner_safe(env, sensor_cfg)  # (num_envs,)
+    clearance = foot_z - ground_z.unsqueeze(1)                   # (num_envs, num_feet)
+
+    # --- 4. Error relative to commanded clearance (only when too LOW) ---
+    target_expand = target_clearance.unsqueeze(1)                # (num_envs, 1)
+    below_target = torch.clamp(target_expand - clearance, min=0.0)
+    error = below_target**2                                      # (num_envs, num_feet)
+
+    # --- 5. Swing mask (only moving feet matter) ---
+    foot_vel = torch.norm(
+        robot.data.body_lin_vel_w[:, asset_cfg.body_ids, :],
+        dim=-1,
+    )                                                             # (num_envs, num_feet)
+    is_swinging = (foot_vel > swing_vel_thresh).float()
+
+    # --- 6. Exponential per-foot reward, stabilized ---
+    exp_arg = (-error / sigma).clamp(min=-20.0, max=0.0)
+    rew_per_foot = torch.exp(exp_arg) * is_swinging              # (num_envs, num_feet)
+
+    # If no feet are swinging in an env, rew_per_foot will be all zeros there,
+    # which is fine: mean=0, std=0 → reward=0.
+
+    # --- 7. Aggregate across feet with imbalance penalty ---
+    mean = rew_per_foot.mean(dim=1)                              # (num_envs,)
+    std = rew_per_foot.std(dim=1, unbiased=False)                # (num_envs,)
+
+    reward = mean - imbalance_coef * std
+    reward = torch.clamp(reward, min=0.0)                        # (num_envs,)
+
+    if torch.isnan(reward).any() or torch.isinf(reward).any():
+        print("NaN/Inf in track_feet_clearance_exp reward")
+        raise RuntimeError("NaN/Inf in track_feet_clearance_exp")
+
+    return reward
 
 
 # ---------------------------------------------------------
@@ -218,60 +383,6 @@ def track_feet_clearance_body_l2(
 
 
 
-def track_feet_clearance_exp(
-    env,
-    command_name: str,
-    asset_cfg: SceneEntityCfg,
-    sensor_cfg: SceneEntityCfg,
-    sigma: float = 0.01,
-    swing_vel_thresh: float = 0.1,
-):
-    """
-    Real foot-clearance reward using RayCaster terrain height.
-
-    - Command: gait_params[:, 2]  = target clearance (m)
-    - Clearance: foot_z - ground_z_from_scanner
-    - Penalize only when below target, only on swinging feet
-    - Use exp(-error/sigma) with clamped exponent for stability
-    """
-    # --- 1. Commanded clearance ---
-    gait_cmd = env.command_manager.get_command(command_name)   # (num_envs, 3)
-    target_clearance = gait_cmd[:, 2]                          # (num_envs,)
-
-    # --- 2. Base + foot positions ---
-    robot = env.scene[asset_cfg.name]
-    foot_pos_w = robot.data.body_pos_w[:, asset_cfg.body_ids, :]   # (num_envs, num_feet, 3)
-    foot_z = foot_pos_w[..., 2]                                    # (num_envs, num_feet)
-
-    # --- 3. Terrain height from RayCaster (per env) ---
-    ground_z = ground_height_from_scanner(env, sensor_cfg)         # (num_envs,)
-    clearance = foot_z - ground_z.unsqueeze(1)                     # (num_envs, num_feet)
-
-    # --- 4. Error relative to commanded clearance (only when too LOW) ---
-    target_expand = target_clearance.unsqueeze(1)                  # (num_envs, 1)
-    below_target = torch.clamp(target_expand - clearance, min=0.0) # positive if too low
-    error = below_target**2                                        # (num_envs, num_feet)
-
-    # --- 5. Swing mask (only moving feet matter) ---
-    foot_vel = torch.norm(
-        robot.data.body_lin_vel_w[:, asset_cfg.body_ids, :],
-        dim=-1,
-    )                                                               # (num_envs, num_feet)
-    is_swinging = (foot_vel > swing_vel_thresh).float()
-
-    # --- 6. Exponential reward, stabilized ---
-    # Clamp exponent to avoid underflow/overflow
-    exp_arg = (-error / sigma).clamp(min=-20.0, max=0.0)
-    rew_per_foot = torch.exp(exp_arg) * is_swinging                # (num_envs, num_feet)
-
-    # Sum across feet -> [0, num_feet]
-    reward = torch.sum(rew_per_foot, dim=1)                        # (num_envs,)
-
-    if torch.isnan(reward).any() or torch.isinf(reward).any():
-        print("NaN/Inf in track_feet_clearance_exp reward")
-        raise RuntimeError("NaN/Inf in track_feet_clearance_exp")
-
-    return reward
 
 
 

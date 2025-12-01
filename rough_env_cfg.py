@@ -13,6 +13,7 @@ from isaaclab.sensors import RayCasterCfg, patterns, ContactSensorCfg
 
 # Use the same mdp module as the base configs
 import isaaclab.envs.mdp as mdp
+import isaaclab_tasks.manager_based.locomotion.velocity.mdp.rewards as vel_mdp
 
 from isaaclab_tasks.manager_based.locomotion.velocity.velocity_env_cfg import (
     LocomotionVelocityRoughEnvCfg,
@@ -64,19 +65,18 @@ class NavRewardsCfg(BaseRewardsCfg):
     """Reward config with milestone-gated nav + locomotion terms."""
     #base_height_err = None
     base_height_err = RewTerm(
-        func=mdp.base_height_l2,
+        func=custom_rewards.base_height_l2_safe,
         weight=-1.5,
         params={
-            "target_height": 0.38,  # world-frame target, or nominal above-ray height
+            "target_height": 0.38,
             "asset_cfg": SceneEntityCfg("robot"),
-            # If you have a downward raycaster / height scanner:
             "sensor_cfg": SceneEntityCfg("height_scanner"),
         },
     )
 
-    track_foot_clearance_ray = RewTerm(
-        func=custom_rewards.track_feet_clearance_exp,
-        weight=0.35,   # start small; you can tune up later
+    track_foot_clearance = RewTerm(
+        func=custom_rewards.track_feet_clearance_exp,  # use the ray version
+        weight=0.04,  # low-ish so it doesn't dominate
         params={
             "command_name": "gait_params",
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_foot"),
@@ -85,6 +85,7 @@ class NavRewardsCfg(BaseRewardsCfg):
             "swing_vel_thresh": 0.1,
         },
     )
+
 
     # Clearance: "Lift feet when I say lift"
     # track_foot_clearance = RewTerm(
@@ -228,17 +229,24 @@ class UnitreeGo2RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
 
         # rewards
         self.rewards.feet_air_time.params["sensor_cfg"].body_names = ".*_foot"
-        self.rewards.feet_air_time.weight = 0.01
+        self.rewards.feet_air_time.weight = 1
         #self.rewards.undesired_contacts = None
         self.rewards.dof_torques_l2.weight = -0.0002
-        self.rewards.track_lin_vel_xy_exp.weight = 2
-        self.rewards.track_ang_vel_z_exp.weight = 1
+        self.rewards.track_lin_vel_xy_exp.weight = 3
+        self.rewards.track_ang_vel_z_exp.weight = 1.5
         self.rewards.dof_acc_l2.weight = -2.5e-7
-        self.rewards.flat_orientation_l2.weight = -1.0
+        self.rewards.flat_orientation_l2.weight = -1.75
         self.rewards.dof_pos_limits.weight = -0.5
-
-        # terminations
-        self.terminations.base_contact.params["sensor_cfg"].body_names = "base"
+        self.rewards.track_foot_clearance = None
+        self.rewards.feet_slide = RewTerm(
+            func=vel_mdp.feet_slide,
+            weight=-0.325,  # good starting point; can go to -0.25 later
+            params={
+                "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),
+                "asset_cfg": SceneEntityCfg("robot", body_names=".*_foot"),
+            },
+        )
+        
         if self.rewards.undesired_contacts is not None:
             # Point it at the contact sensor
             self.rewards.undesired_contacts.params["sensor_cfg"].name = "contact_forces"
@@ -254,6 +262,8 @@ class UnitreeGo2RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 "RL_hip", "RL_thigh", "RL_calf",
                 "RR_hip", "RR_thigh", "RR_calf",
             ]
+        # terminations
+        self.terminations.base_contact.params["sensor_cfg"].body_names = "base"
 
 @configclass
 class UnitreeGo2RoughEnvCfg_PLAY(UnitreeGo2RoughEnvCfg):
