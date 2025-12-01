@@ -13,7 +13,7 @@ With video:
 
 Watch
 ```
-./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/play.py --task=Isaac-Nav-Go2-v0 --video --video_length 200
+./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/play.py --task=Isaac-Nav-Go2-v0 --num_envs 1
 ```
 RESUME:
 

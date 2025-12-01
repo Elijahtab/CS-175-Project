@@ -2,6 +2,7 @@ import torch
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.envs import ManagerBasedRLEnv
 import isaaclab.utils.math as math_utils  # Contains the crucial conversion tools
+import isaaclab.envs.mdp as mdp
 
 
 # Placeholder function (fills with 0's)
@@ -101,6 +102,44 @@ def lookahead_hint(env: ManagerBasedRLEnv) -> torch.Tensor:
 
     # 3. Combine
     return torch.cat([noise_vec, flag], dim=-1)
+
+def safe_height_scan(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+    """
+    Wrapper around mdp.height_scan that:
+      - masks NaN/Inf ray hits from the RayCaster
+      - clamps ray z-values into a sane range (e.g. [-2, 2])
+    before computing the height scan vector.
+    """
+    sensor = env.scene[sensor_cfg.name]
+    hits = sensor.data.ray_hits_w              # (num_envs, num_rays, 3)
+
+    # 1) Mask non-finite hits
+    finite = torch.isfinite(hits).all(dim=-1)  # (num_envs, num_rays)
+
+    if (~finite).any():
+        bad_envs = torch.nonzero((~finite).any(dim=1), as_tuple=False).squeeze(-1)
+        print("safe_height_scan: masking non-finite ray hits in envs:", bad_envs)
+
+        fixed_hits = hits.clone()
+        fixed_hits[~finite] = 0.0             # zero-out any bad rays entirely
+    else:
+        fixed_hits = hits
+
+    # 2) Clamp z-component into [-2, 2] (or whatever range you want)
+    fixed_hits[..., 2] = torch.clamp(fixed_hits[..., 2], -2.0, 2.0)
+
+    # 3) Write back to sensor data so mdp.height_scan sees the cleaned values
+    sensor.data.ray_hits_w = fixed_hits
+
+    # 4) Delegate to normal height_scan on cleaned + clamped data
+    out = mdp.height_scan(env, sensor_cfg=sensor_cfg)
+
+    # 5) Belt-and-suspenders: ensure obs is finite
+    if torch.isnan(out).any() or torch.isinf(out).any():
+        print("safe_height_scan: produced non-finite output, this should not happen")
+        raise RuntimeError("safe_height_scan output non-finite")
+
+    return out
 
 
 # def lookahead_hint2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:

@@ -4,6 +4,41 @@ from isaaclab.utils.math import euler_xyz_from_quat, wrap_to_pi, quat_apply_inve
 import isaaclab_tasks.manager_based.locomotion.velocity.config.go2_nav.custom_obs as custom_obs
 
 
+def ground_height_from_scanner(env, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+    """
+    Returns per-env ground height z using the height_scanner RayCaster.
+
+    - Masks NaN/Inf
+    - Clamps z to a sane range
+    - Averages over all rays per env
+
+    Output: ground_z: (num_envs,)
+    """
+    sensor = env.scene[sensor_cfg.name]
+    hits = sensor.data.ray_hits_w          # (num_envs, num_rays, 3)
+    hits_z = hits[..., 2]                  # (num_envs, num_rays)
+
+    # 1) Mask non-finite
+    finite = torch.isfinite(hits_z)
+    safe_hits_z = hits_z.clone()
+    safe_hits_z[~finite] = 0.0
+
+    # 2) Clamp to avoid absurd values
+    safe_hits_z = torch.clamp(safe_hits_z, -2.0, 2.0)
+
+    # 3) Average only over finite rays
+    counts = finite.sum(dim=1).clamp_min(1)           # (num_envs,)
+    ground_z = safe_hits_z.sum(dim=1) / counts        # (num_envs,)
+
+    # Sanity check
+    if torch.isnan(ground_z).any() or torch.isinf(ground_z).any():
+        print("ground_height_from_scanner: non-finite ground_z")
+        raise RuntimeError("ground_height_from_scanner produced non-finite")
+
+    return ground_z
+
+
+
 # ---------------------------------------------------------
 # Existing NAV rewards (keep)
 # ---------------------------------------------------------
@@ -94,74 +129,93 @@ def ang_vel_tracking_exp(env, asset_cfg: SceneEntityCfg, command_name: str):
     diff = wz_ref - wz
     return torch.exp(-(diff * diff))
 
-# 3. Height error (z - z_ref)^2  (use constant z_ref from params)
-def base_height_error(env, asset_cfg: SceneEntityCfg, target_height: float = 0.38, asset_radius: float = 0.1):
+
+def track_commanded_height_exp(env, command_name: str, asset_cfg: SceneEntityCfg, sensor_cfg: SceneEntityCfg):
     """
-    Penalize deviation from target height RELATIVE TO TERRAIN.
+    Reward for matching commanded base height (gait_params[:, 0]) relative to terrain.
+    Returns exp(-error^2 / std^2).
     """
-    # 1. Get Robot Data
+    # 1. Commanded offset
+    gait_cmd = env.command_manager.get_command(command_name)  # (num_envs, 3)
+    target_height_offset = gait_cmd[:, 0]                     # (num_envs,)
+
+    nominal_height = 0.38
+    target_height = nominal_height + target_height_offset     # (num_envs,)
+
+    # 2. Current height relative to terrain via RayCaster
     robot = env.scene[asset_cfg.name]
+    sensor = env.scene[sensor_cfg.name]
 
-    #ORIGINAL:
-    # z = robot.data.root_pos_w[:, 2]
-    # diff = z - target_height
-    # return diff * diff  # use NEGATIVE weight to make it a penalty
+    ground_z = torch.mean(sensor.data.ray_hits_w[..., 2], dim=1)  # (num_envs,)
+    current_height = robot.data.root_pos_w[:, 2] - ground_z       # (num_envs,)
 
-    #NEW:
-    root_pos_w = robot.data.root_pos_w
-    # 2. Get Terrain Height at Robot's (X, Y)
-    # We query the terrain generator for the height under the robot's center
-    # Note: Requires env.scene.terrain to be active
-    terrain_heights = env.scene.terrain.terrain_height_at_pos(root_pos_w[:, :2])
-    
-    # 3. Calculate Relative Height (Robot Z - Ground Z)
-    # We subtract terrain height to get 'local' height
-    current_height = root_pos_w[:, 2] - terrain_heights
-    
-    # 4. Calculate Error
-    # FUTURE PROOFING: Later, replace 'target_height' with: 
-    # target = env.command_manager.get_command("gait_params")[:, 0]
-    diff = current_height - target_height
-    
-    return torch.square(diff)
-
-
-def track_commanded_height_exp(env, command_name: str, asset_cfg: SceneEntityCfg):
-    """
-    Reward for matching the commanded base height relative to the terrain.
-    Uses an exponential kernel: exp(-error^2 / std^2).
-    """
-    # 1. Get the Command (The "Target")
-    # We fetch the command named 'gait_params'. 
-    # Assumes format: [Body Height, Step Freq, Clearance]
-    # We only want index 0 (Body Height).
-    gait_cmd = env.command_manager.get_command(command_name)
-    target_height_offset = gait_cmd[:, 0] # This is usually an offset, e.g., -0.1m
-    
-    # Define the nominal standing height (The "Zero" point)
-    # You can pass this as a param, or hardcode it if your robot is fixed.
-    nominal_height = 0.38 
-    target_height = nominal_height + target_height_offset
-
-    # 2. Get Current Height (Relative to Terrain)
-    robot = env.scene[asset_cfg.name]
-    root_pos_w = robot.data.root_pos_w
-    
-    # Handle flat ground vs rough terrain cases safely
-    if env.scene.terrain.cfg.terrain_type == "plane":
-        terrain_height = torch.zeros_like(root_pos_w[:, 2])
-    else:
-        terrain_height = env.scene.terrain.terrain_height_at_pos(root_pos_w[:, :2])
-        
-    current_height = root_pos_w[:, 2] - terrain_height
-
-    # 3. Calculate Error
+    # 3. Error + exp kernel
     error = torch.square(current_height - target_height)
-    
-    # 4. Convert to Reward (Exponential is better for tracking than L2 penalty)
-    # This gives +1.0 for perfect tracking, decaying to 0.0 as error increases.
-    std = 0.05 # Tolerance window (5cm)
-    return torch.exp(-error / (std**2))
+    std = 0.05
+    result = torch.exp(-error / (std**2))
+
+    if torch.isnan(result).any() or torch.isinf(result).any():
+        print("NaN/Inf in track_commanded_height_exp")
+        raise RuntimeError("NaN/Inf in track_commanded_height_exp")
+
+    return result
+
+def track_feet_clearance_body_l2(
+    env,
+    command_name: str,
+    asset_cfg: SceneEntityCfg,
+    nominal_height: float = 0.38,
+    swing_vel_thresh: float = 0.1,
+):
+    """
+    Safer clearance reward that does NOT touch RayCaster or terrain.
+    Approximate ground under the base as:
+        z_ground ≈ base_z - nominal_height
+
+    Then:
+        clearance = foot_z - z_ground
+
+    We penalize (clearance - target_clearance)^2 on SWINGING feet only.
+    """
+    robot = env.scene[asset_cfg.name]
+
+    # --- 1. Commanded clearance (index 2: [height, freq, clearance]) ---
+    gait_cmd = env.command_manager.get_command(command_name)  # (num_envs, 3)
+    target_clearance = gait_cmd[:, 2]                         # (num_envs,)
+
+    # --- 2. Base + feet z positions ---
+    base_z = robot.data.root_pos_w[:, 2]                      # (num_envs,)
+    foot_pos_w = robot.data.body_pos_w[:, asset_cfg.body_ids, :]  # (num_envs, num_feet, 3)
+    foot_z = foot_pos_w[..., 2]                                   # (num_envs, num_feet)
+
+    # approximate ground plane from base height:
+    z_ground_approx = base_z - nominal_height                  # (num_envs,)
+    clearance = foot_z - z_ground_approx.unsqueeze(1)          # (num_envs, num_feet)
+
+    # --- 3. Error vs target, clamp only when *below* target ---
+    target_expand = target_clearance.unsqueeze(1)              # (num_envs, 1)
+    below_target = torch.clamp(target_expand - clearance, min=0.0)
+    error = below_target**2                                    # (num_envs, num_feet)
+
+    # --- 4. Apply only to swinging feet ---
+    foot_vel = torch.norm(
+        robot.data.body_lin_vel_w[:, asset_cfg.body_ids, :],
+        dim=-1,
+    )                                                          # (num_envs, num_feet)
+    is_swinging = (foot_vel > swing_vel_thresh).float()
+
+    # L2 penalty on error for swinging feet
+    per_foot_penalty = error * is_swinging                     # (num_envs, num_feet)
+    penalty = per_foot_penalty.mean(dim=1)                     # (num_envs,)
+
+    # Optional sanity check
+    if torch.isnan(penalty).any() or torch.isinf(penalty).any():
+        print("NaN/Inf in track_feet_clearance_body_l2")
+        raise RuntimeError("NaN in track_feet_clearance_body_l2")
+
+    # NOTE: This returns a *penalty*; use a negative weight or negate here.
+    return penalty
+
 
 
 def track_feet_clearance_exp(
@@ -173,43 +227,53 @@ def track_feet_clearance_exp(
     swing_vel_thresh: float = 0.1,
 ):
     """
-    Reward for matching commanded foot clearance (command[2]) relative to local ground.
+    Real foot-clearance reward using RayCaster terrain height.
 
-    - Uses a RayCaster (e.g. 'height_scanner') to estimate ground height.
-    - Applies exp(-error / sigma) only on swinging feet.
+    - Command: gait_params[:, 2]  = target clearance (m)
+    - Clearance: foot_z - ground_z_from_scanner
+    - Penalize only when below target, only on swinging feet
+    - Use exp(-error/sigma) with clamped exponent for stability
     """
-    # 1. Command: [height, freq, clearance]
-    gait_cmd = env.command_manager.get_command(command_name)  # (num_envs, 3)
-    target_clearance = gait_cmd[:, 2]                         # (num_envs,)
+    # --- 1. Commanded clearance ---
+    gait_cmd = env.command_manager.get_command(command_name)   # (num_envs, 3)
+    target_clearance = gait_cmd[:, 2]                          # (num_envs,)
 
-    # 2. Foot positions
+    # --- 2. Base + foot positions ---
     robot = env.scene[asset_cfg.name]
-    # positions of the selected bodies (feet) in world frame: (num_envs, num_feet, 3)
-    foot_pos_w = robot.data.body_pos_w[:, asset_cfg.body_ids, :]
-    foot_z = foot_pos_w[..., 2]  # (num_envs, num_feet)
+    foot_pos_w = robot.data.body_pos_w[:, asset_cfg.body_ids, :]   # (num_envs, num_feet, 3)
+    foot_z = foot_pos_w[..., 2]                                    # (num_envs, num_feet)
 
-    # 3. Ground height from height scanner (RayCaster)
-    sensor = env.scene[sensor_cfg.name]
-    # ray_hits_w: (num_envs, num_rays, 3)
-    ground_z = torch.mean(sensor.data.ray_hits_w[..., 2], dim=1)  # (num_envs,)
+    # --- 3. Terrain height from RayCaster (per env) ---
+    ground_z = ground_height_from_scanner(env, sensor_cfg)         # (num_envs,)
+    clearance = foot_z - ground_z.unsqueeze(1)                     # (num_envs, num_feet)
 
-    # clearance = foot_z - ground_z
-    clearance = foot_z - ground_z.unsqueeze(1)  # broadcast: (num_envs, num_feet)
+    # --- 4. Error relative to commanded clearance (only when too LOW) ---
+    target_expand = target_clearance.unsqueeze(1)                  # (num_envs, 1)
+    below_target = torch.clamp(target_expand - clearance, min=0.0) # positive if too low
+    error = below_target**2                                        # (num_envs, num_feet)
 
-    # 4. Error (only when below target)
-    target_expand = target_clearance.unsqueeze(1)  # (num_envs, 1)
-    below_target = torch.clamp(target_expand - clearance, min=0.0)
-    error = below_target**2  # (num_envs, num_feet)
-
-    # 5. Swing mask (feet moving in world)
-    foot_vel = torch.norm(robot.data.body_lin_vel_w[:, asset_cfg.body_ids, :], dim=-1)  # (num_envs, num_feet)
+    # --- 5. Swing mask (only moving feet matter) ---
+    foot_vel = torch.norm(
+        robot.data.body_lin_vel_w[:, asset_cfg.body_ids, :],
+        dim=-1,
+    )                                                               # (num_envs, num_feet)
     is_swinging = (foot_vel > swing_vel_thresh).float()
 
-    # 6. Exponential kernel + sum across feet
-    rew_per_foot = torch.exp(-error / sigma) * is_swinging
-    reward = torch.sum(rew_per_foot, dim=1)  # (num_envs,)
+    # --- 6. Exponential reward, stabilized ---
+    # Clamp exponent to avoid underflow/overflow
+    exp_arg = (-error / sigma).clamp(min=-20.0, max=0.0)
+    rew_per_foot = torch.exp(exp_arg) * is_swinging                # (num_envs, num_feet)
+
+    # Sum across feet -> [0, num_feet]
+    reward = torch.sum(rew_per_foot, dim=1)                        # (num_envs,)
+
+    if torch.isnan(reward).any() or torch.isinf(reward).any():
+        print("NaN/Inf in track_feet_clearance_exp reward")
+        raise RuntimeError("NaN/Inf in track_feet_clearance_exp")
 
     return reward
+
+
 
 
 # 4. Pose similarity ||q - q_default||^2

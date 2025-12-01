@@ -59,14 +59,13 @@ class NavCommandsCfg(BaseCommandsCfg):
     gait_params: commands.GaitParamCommandCfg = commands.GaitParamCommandCfg()
 
 
-
 @configclass
 class NavRewardsCfg(BaseRewardsCfg):
     """Reward config with milestone-gated nav + locomotion terms."""
-
+    #base_height_err = None
     base_height_err = RewTerm(
         func=mdp.base_height_l2,
-        weight=-2.0,
+        weight=-1.5,
         params={
             "target_height": 0.38,  # world-frame target, or nominal above-ray height
             "asset_cfg": SceneEntityCfg("robot"),
@@ -75,30 +74,42 @@ class NavRewardsCfg(BaseRewardsCfg):
         },
     )
 
-    # Clearance: "Lift feet when I say lift"
-    track_foot_clearance = RewTerm(
+    track_foot_clearance_ray = RewTerm(
         func=custom_rewards.track_feet_clearance_exp,
-        weight=0.3,
+        weight=0.35,   # start small; you can tune up later
         params={
             "command_name": "gait_params",
-            "asset_cfg":  SceneEntityCfg("robot", body_names=".*_foot"),
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*_foot"),
             "sensor_cfg": SceneEntityCfg("height_scanner"),
             "sigma": 0.01,
             "swing_vel_thresh": 0.1,
         },
     )
 
-    # CAN WE DO THIS?
-    # TRACK HEIGHT (Dynamic)
-    # track_height = RewTerm(
-    #     func=custom_rewards.track_commanded_height_exp,
-    #     weight=2.0, # Positive weight because we are using exp() reward
+    # Clearance: "Lift feet when I say lift"
+    # track_foot_clearance = RewTerm(
+    #     func=custom_rewards.track_feet_clearance_exp,
+    #     weight=0.4,
     #     params={
-    #         "command_name": "gait_params", # Must match the name in CommandsCfg
-    #         "asset_cfg": SceneEntityCfg("robot"),
+    #         "command_name": "gait_params",
+    #         "asset_cfg":  SceneEntityCfg("robot", body_names=".*_foot"),
+    #         "sensor_cfg": SceneEntityCfg("height_scanner"),
+    #         "sigma": 0.01,
+    #         "swing_vel_thresh": 0.1,
     #     },
     # )
 
+    # CAN WE DO THIS?
+    # TRACK HEIGHT (Dynamic)
+    # track_cmd_height = RewTerm(
+    #     func=custom_rewards.track_commanded_height_exp,
+    #     weight=1.0,  # or whatever
+    #     params={
+    #         "command_name": "gait_params",
+    #         "asset_cfg":  SceneEntityCfg("robot"),
+    #         "sensor_cfg": SceneEntityCfg("height_scanner"),
+    #     },
+    # )
     # roll_pitch_pen: RewTerm = RewTerm(
     #     func=custom_rewards.roll_pitch_penalty,
     #     weight=-1.0,
@@ -161,7 +172,6 @@ class NavObservationsCfg(BaseObservationsCfg):
             func=mdp.generated_commands,
             params={"command_name": "gait_params"},
         )
-
         def __post_init__(self):
             # Run base init FIRST (this creates inherited terms,
             # including velocity_commands which uses generated_commands("base_velocity"))
@@ -170,6 +180,7 @@ class NavObservationsCfg(BaseObservationsCfg):
             # Standard Isaac Lab pattern
             self.concatenate_terms = True
             self.enable_corruption = True
+        
 
     policy: PolicyCfg = PolicyCfg()
 
@@ -218,15 +229,31 @@ class UnitreeGo2RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         # rewards
         self.rewards.feet_air_time.params["sensor_cfg"].body_names = ".*_foot"
         self.rewards.feet_air_time.weight = 0.01
-        self.rewards.undesired_contacts = None
+        #self.rewards.undesired_contacts = None
         self.rewards.dof_torques_l2.weight = -0.0002
-        self.rewards.track_lin_vel_xy_exp.weight = 1.5
-        self.rewards.track_ang_vel_z_exp.weight = 0.75
+        self.rewards.track_lin_vel_xy_exp.weight = 2
+        self.rewards.track_ang_vel_z_exp.weight = 1
         self.rewards.dof_acc_l2.weight = -2.5e-7
+        self.rewards.flat_orientation_l2.weight = -1.0
+        self.rewards.dof_pos_limits.weight = -0.5
 
         # terminations
         self.terminations.base_contact.params["sensor_cfg"].body_names = "base"
+        if self.rewards.undesired_contacts is not None:
+            # Point it at the contact sensor
+            self.rewards.undesired_contacts.params["sensor_cfg"].name = "contact_forces"
 
+            # Hard-code the bodies we *don't* want touching the ground.
+            # Feet are allowed, everything else is undesired.
+            self.rewards.undesired_contacts.params["sensor_cfg"].body_names = [
+                "base",
+                "Head_upper",
+                "Head_lower",
+                "FL_hip", "FL_thigh", "FL_calf",
+                "FR_hip", "FR_thigh", "FR_calf",
+                "RL_hip", "RL_thigh", "RL_calf",
+                "RR_hip", "RR_thigh", "RR_calf",
+            ]
 
 @configclass
 class UnitreeGo2RoughEnvCfg_PLAY(UnitreeGo2RoughEnvCfg):
@@ -250,3 +277,5 @@ class UnitreeGo2RoughEnvCfg_PLAY(UnitreeGo2RoughEnvCfg):
         # remove random pushing event
         self.events.base_external_force_torque = None
         self.events.push_robot = None
+
+        
