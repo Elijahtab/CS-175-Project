@@ -102,11 +102,19 @@ class NavObservationsCfg(BaseObservationsCfg):
 class NavRewardsCfg(BaseRewardsCfg):
     base_height_l2 = RewTerm(
         func=custom_rewards.base_height_l2,
-        weight=-5.0,   # negative because it’s a penalty
+        weight=-3.0,   # negative because it’s a penalty
         params={
-            "target_height": 0.36,                 # tune this! ~standing base height in meters
+            "target_height": 0.37,                 # tune this! ~standing base height in meters
             "asset_cfg": SceneEntityCfg("robot"),
             # For flat env we don’t need a sensor, so omit "sensor_cfg"
+        },
+    )
+    foot_forward_separation = RewTerm(
+        func=custom_rewards.foot_forward_separation,
+        weight=-1.0,   # start small, tune between -0.5 and -3.0
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "min_separation": 0.08,
         },
     )
     # # disable ALL inherited locomotion rewards
@@ -205,13 +213,16 @@ class NavCommandsCfg(BaseCommandsCfg):
 @configclass
 class NavTerminationsCfg(BaseTerminationsCfg):
     base_contact = None
+    bad_orientation = None
+    # bad_orientation = DoneTerm(
+    #     func=mdp.bad_orientation,
+    #     params={"asset_cfg": SceneEntityCfg("robot"), "limit_angle": 0.7}, 
+    # )
 
-    bad_orientation = DoneTerm(
-        func=mdp.bad_orientation,
-        params={"asset_cfg": SceneEntityCfg("robot"), "limit_angle": 2.5},
-    )
 
-
+# ======================================================================
+# Full Env Config
+# ======================================================================
 # ======================================================================
 # Full Env Config
 # ======================================================================
@@ -286,15 +297,26 @@ class UnitreeGo2RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             self.rewards.undesired_contacts.weight = -5.0
             
         if hasattr(self.rewards, "lin_vel_z_l2"):
-            self.rewards.lin_vel_z_l2.weight = -4.0          # discourage vertical bouncing
+            self.rewards.lin_vel_z_l2.weight = -2.0          # discourage vertical bouncing
 
         if hasattr(self.rewards, "ang_vel_xy_l2"):
             self.rewards.ang_vel_xy_l2.weight = -0.2         # discourage roll/pitch motion
 
         if hasattr(self.rewards, "feet_air_time"):
-            self.rewards.feet_air_time.weight = 0.25         # encourage stepping
+            self.rewards.feet_air_time.weight = 0.15         # encourage stepping
             sensor_cfg = self.rewards.feet_air_time.params["sensor_cfg"]
             sensor_cfg.body_names = ".*_foot"
+        
+        if hasattr(self.rewards, "dof_pos_limits"):
+            self.rewards.dof_pos_limits.weight = -0.1  # it’s 0.0 in your logs
+            
+        if hasattr(self.rewards, "track_lin_vel_xy_exp"):
+            self.rewards.track_lin_vel_xy_exp.weight = 3.0  # or even 5.0
+
+        if hasattr(self.rewards, "track_ang_vel_z_exp"):
+            self.rewards.track_ang_vel_z_exp.weight = 1.5
 
         self.events.push_robot = None
-        self.curriculum.terrain_levels = None
+        # self.curriculum.terrain_levels = None
+        
+        
