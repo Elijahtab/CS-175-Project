@@ -54,23 +54,23 @@ class UnitreeGo2FlatEnvCfg(UnitreeGo2RoughEnvCfg):
         # self.commands.base_velocity.ranges.ang_vel_z = (-0.5, 0.5)
         # self.commands.base_velocity.ranges.heading   = (-1.57, 1.57)  # +/- ~90deg
         # override rewards
-        self.rewards.track_lin_vel_xy_exp.weight = 0.2
-        self.rewards.track_ang_vel_z_exp.weight  = 0.1
+        self.rewards.track_lin_vel_xy_exp.weight = 2.0
+        self.rewards.track_ang_vel_z_exp.weight  = 1.0
 
         # Strong posture rewards
         if hasattr(self.rewards, "flat_orientation_l2"):
-            self.rewards.flat_orientation_l2.weight = -10.0
+            self.rewards.flat_orientation_l2.weight = -5.0
 
         # NEW: strong penalty for being too low / too high
         if hasattr(self.rewards, "base_height_l2"):
             # tune weight and target_height (in custom_rewards) together
-            self.rewards.base_height_l2.weight = -8.0
+            self.rewards.base_height_l2.weight = -5.0
 
         if hasattr(self.rewards, "lin_vel_z_l2"):
-            self.rewards.lin_vel_z_l2.weight = -3.0
+            self.rewards.lin_vel_z_l2.weight = -0.5
 
         if hasattr(self.rewards, "ang_vel_xy_l2"):
-            self.rewards.ang_vel_xy_l2.weight = -0.5
+            self.rewards.ang_vel_xy_l2.weight = -0.1
 
         # Penalize non-foot contacts (as in last message)
         if hasattr(self.rewards, "undesired_contacts"):
@@ -82,7 +82,10 @@ class UnitreeGo2FlatEnvCfg(UnitreeGo2RoughEnvCfg):
 
         # Don’t encourage stepping yet for M1
         if hasattr(self.rewards, "feet_air_time"):
-            self.rewards.feet_air_time.weight = 0.5
+            self.rewards.feet_air_time.weight = 0.2
+        
+        if hasattr(self.rewards, "dof_pos_limits"):
+            self.rewards.dof_pos_limits.weight = -0.1  # it’s 0.0 in your logs
         
         # change terrain to flat
         self.scene.terrain.terrain_type = "plane"
