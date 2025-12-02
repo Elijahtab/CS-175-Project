@@ -68,18 +68,28 @@ class EventCfg:
         },
     )
 
-    # randomize obstacle positions on reset.
-    randomize_obstacles = EventTerm(
-        func=custom_events.randomize_obstacles,
-        mode="reset",
+    # One-time static obstacle placement per env at startup
+    randomize_obstacles_static = EventTerm(
+        func=custom_events.randomize_obstacles_static_startup,
+        mode="startup",
         params={
-            # you can tweak these to control sparsity / difficulty:
-            "spawn_radius": 3.0,
-            "min_gap_from_robot": 0.7,
-            "max_active_obstacles": 3,
-            "obstacle_density": 0.25,
+            "inner_radius": 1.0,   # larger than robot spawn radius (0.5)
+            "outer_radius": 3.0,
         },
     )
+
+    # BAD BC ITS NOT STATIC: randomize obstacle positions on reset.
+    # randomize_obstacles = EventTerm(
+    #     func=custom_events.randomize_obstacles,
+    #     mode="reset",
+    #     params={
+    #         # you can tweak these to control sparsity / difficulty:
+    #         "spawn_radius": 3.0,
+    #         "min_gap_from_robot": 0.7,
+    #         "max_active_obstacles": 3,
+    #         "obstacle_density": 0.25,
+    #     },
+    # )
 
 
 @configclass

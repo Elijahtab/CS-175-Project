@@ -151,7 +151,7 @@ class NavSceneCfg(BaseSceneCfg):
             horizontal_fov_range=(-180.0, 180.0),
             horizontal_res=1.0,
         ),
-        mesh_prim_paths=["/World/ground"],   # FIXED
+        mesh_prim_paths=["/World/ground"],
         debug_vis=True,
     )
 

@@ -2,6 +2,63 @@ import torch
 import math
 from isaaclab.envs import ManagerBasedRLEnv
 
+# You can reuse your existing constants, or hardcode.
+# If you want to reuse OBSTACLE_HEIGHT, you can either:
+# - import it from rough_env_cfg, OR
+# - just rely on the default z already stored in object_link_pose_w.
+# I'll do the second (simpler) option.
+
+def randomize_obstacles_static_startup(
+    env: ManagerBasedRLEnv,
+    env_ids: torch.Tensor | None,
+    inner_radius: float = 1.0,   # no cubes inside this radius
+    outer_radius: float = 3.0,   # max radius where cubes can appear
+) -> None:
+    """
+    One-time placement of static obstacles per environment.
+
+    - Called with mode=\"startup\" so it runs once when envs are created.
+    - All obstacles stay kinematic & never move again.
+    - We sample XY positions in an annulus [inner_radius, outer_radius].
+    """
+    scene = env.scene
+    obstacles = scene["obstacles"]  # RigidObjectCollection
+
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
+
+    num_envs = env_ids.shape[0]
+    num_objs = obstacles.num_objects
+
+    # --- Sample radii in [inner_radius, outer_radius] (uniform in area) ---
+    # r^2 is uniform so we don't cluster near inner_radius
+    rand_u = torch.rand((num_envs, num_objs), device=env.device)
+    r_inner2 = inner_radius ** 2
+    r_outer2 = outer_radius ** 2
+    rand_r = torch.sqrt(r_inner2 + (r_outer2 - r_inner2) * rand_u)
+
+    # Uniform theta in [0, 2π)
+    rand_theta = 2.0 * math.pi * torch.rand((num_envs, num_objs), device=env.device)
+
+    offset_x = rand_r * torch.cos(rand_theta)
+    offset_y = rand_r * torch.sin(rand_theta)
+
+    # --- Fetch current poses and overwrite X/Y only ---
+    # shape: [num_envs, num_objs, 7] (x, y, z, qw, qx, qy, qz)
+    obj_pose = obstacles.data.object_link_pose_w.clone()[env_ids]
+
+    # set positions relative to env origin (0,0); z stays as default (half-height)
+    obj_pose[..., 0] = offset_x
+    obj_pose[..., 1] = offset_y
+    # obj_pose[..., 2] left unchanged → cubes remain sitting on ground
+
+    obstacles.write_object_pose_to_sim(
+        object_pose=obj_pose,
+        env_ids=env_ids,
+        object_ids=None,  # all obstacles
+    )
+
+
 def randomize_obstacles(
     env: ManagerBasedRLEnv,
     env_ids: torch.Tensor,
@@ -65,25 +122,21 @@ def randomize_obstacles(
 
     # Build object poses: [N, num_objs, 7] (pos xyz, quat wxyz)
     # Start from default poses, just tweak XY
-    obj_pose = obstacles.data.object_link_pose_w.clone()[env_ids][:, :, :]  # (N, num_objs, 7)
-
     # base position per env, expanded to match objects
     base_xy = base_pos_w[:, :2].unsqueeze(1)  # (N, 1, 2) -> (N, num_objs, 2) via broadcast
 
-    # set positions for active obstacles
+    # Build object poses: [N, num_objs, 7] (pos xyz, quat wxyz)
+    obj_pose = obstacles.data.object_link_pose_w.clone()[env_ids]  # (N, num_objs, 7)
+
+    # (x, y) for all obstacles
     obj_pose[..., 0] = base_xy[..., 0] + offset_x
     obj_pose[..., 1] = base_xy[..., 1] + offset_y
-    # keep z and orientation from default (obj_pose[...,2:7])
 
-    # For inactive obstacles, you might want to move them far away or underground
-    inactive_mask = ~active_mask
-    if inactive_mask.any():
-        # push inactive obstacles below ground
-        obj_pose[..., 2] = torch.where(
-            inactive_mask,
-            torch.full_like(obj_pose[..., 2], -10.0),
-            obj_pose[..., 2],
-        )
+    # Now set z based on active / inactive
+    z_active   = torch.full_like(obj_pose[..., 2], OBSTACLE_HEIGHT * 0.5)
+    z_inactive = torch.full_like(obj_pose[..., 2], -10.0)
+
+    obj_pose[..., 2] = torch.where(active_mask, z_active, z_inactive)
 
     # Write poses back to sim
     obstacles.write_object_pose_to_sim(
