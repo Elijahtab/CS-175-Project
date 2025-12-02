@@ -10,13 +10,16 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
+import isaaclab.sim as sim_utils
+from isaaclab.assets import RigidObjectCfg, RigidObjectCollectionCfg
+
 
 # Low-level locomotion env for Go2 (velocity / rough terrain)
 from isaaclab_tasks.manager_based.locomotion.velocity.config.go2_nav.rough_env_cfg import (
     UnitreeGo2RoughEnvCfg,
     NavSceneCfg,
 )
-from isaaclab_tasks.manager_based.locomotion.velocity.config.go2_nav import commands
+from isaaclab_tasks.manager_based.locomotion.velocity.config.go2_nav import commands, custom_events
 
 # Your nav-specific scene + sensor config (LiDAR, etc.)
 from . import custom_obs
@@ -32,6 +35,11 @@ import isaaclab_tasks.manager_based.navigation.mdp as nav_mdp
 LOW_LEVEL_ENV_CFG = UnitreeGo2RoughEnvCfg()
 MODEL_DIR = "/home/elijah/IsaacLab/logs/rsl_rl/unitree_go2_rough/2025-12-01_12-59-50/exported/"
 MODEL_NAME = "policy.pt"
+
+# How “busy” the env can be.
+MAX_OBSTACLES_PER_ENV = 3        # bump this later to 5, 8, ...
+OBSTACLE_SIZE = (0.4, 0.4, 0.4)  # (x, y, z) in meters
+OBSTACLE_HEIGHT = OBSTACLE_SIZE[2]
 
 
 @configclass
@@ -57,6 +65,19 @@ class EventCfg:
                 "pitch": (-0.0, 0.0),
                 "yaw": (-0.0, 0.0),
             },
+        },
+    )
+
+    # randomize obstacle positions on reset.
+    randomize_obstacles = EventTerm(
+        func=custom_events.randomize_obstacles,
+        mode="reset",
+        params={
+            # you can tweak these to control sparsity / difficulty:
+            "spawn_radius": 3.0,
+            "min_gap_from_robot": 0.7,
+            "max_active_obstacles": 3,
+            "obstacle_density": 0.25,
         },
     )
 
@@ -230,7 +251,6 @@ class NavigationEnvCfg(ManagerBasedRLEnvCfg):
         num_envs=LOW_LEVEL_ENV_CFG.scene.num_envs,
         env_spacing=LOW_LEVEL_ENV_CFG.scene.env_spacing,
         robot=LOW_LEVEL_ENV_CFG.scene.robot,
-        # lidar=LOW_LEVEL_ENV_CFG.scene.lidar,
     )
 
     # Managers

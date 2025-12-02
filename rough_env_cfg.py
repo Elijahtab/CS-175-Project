@@ -11,6 +11,9 @@ from isaaclab.managers import (
 )
 from isaaclab.sensors import RayCasterCfg, patterns, ContactSensorCfg
 
+import isaaclab.sim as sim_utils
+from isaaclab.assets import RigidObjectCfg, RigidObjectCollectionCfg
+
 # Use the same mdp module as the base configs
 import isaaclab.envs.mdp as mdp
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp.rewards as vel_mdp
@@ -30,6 +33,13 @@ from isaaclab_assets.robots.unitree import UNITREE_GO2_CFG
 # IMPORT CUSTOM MODULES
 from . import custom_obs, custom_rewards, commands
 import math
+
+# How “busy” the env can be.
+MAX_OBSTACLES_PER_ENV = 3        # bump this later to 5, 8, ...
+OBSTACLE_SIZE = (0.4, 0.4, 0.4)  # (x, y, z) in meters
+OBSTACLE_HEIGHT = OBSTACLE_SIZE[2]
+NUM_OBSTACLES = 4  # <-- bump this up later when your nav policy gets better
+
 
 
 
@@ -143,6 +153,35 @@ class NavSceneCfg(BaseSceneCfg):
         ),
         mesh_prim_paths=["/World/ground"],   # FIXED
         debug_vis=True,
+    )
+
+    obstacles: RigidObjectCollectionCfg = RigidObjectCollectionCfg(
+        rigid_objects={
+            f"obstacle_{i}": RigidObjectCfg(
+                prim_path=f"/World/envs/env_.*/NavObstacle_{i}",
+                spawn=sim_utils.CuboidCfg(
+                    size=OBSTACLE_SIZE,
+                    rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                        # THIS is the important part:
+                        # kinematic = static: not affected by gravity or forces
+                        kinematic_enabled=True,
+                        # do NOT set disable_gravity=True, you don’t need it here
+                    ),
+                    collision_props=sim_utils.CollisionPropertiesCfg(
+                        collision_enabled=True,
+                    ),
+                    visual_material=sim_utils.PreviewSurfaceCfg(
+                        diffuse_color=(0.4, 0.4, 0.4),
+                    ),
+                ),
+                init_state=RigidObjectCfg.InitialStateCfg(
+                    # center at half the height so they rest on z=0 ground
+                    pos=(1.5, 0.0, OBSTACLE_SIZE[2] * 0.5),
+                    rot=(1.0, 0.0, 0.0, 0.0),  # identity quaternion = “flat”
+                ),
+            )
+            for i in range(MAX_OBSTACLES_PER_ENV)
+        }
     )
 
 
