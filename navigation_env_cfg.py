@@ -13,6 +13,9 @@ from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 import isaaclab.sim as sim_utils
 from isaaclab.assets import RigidObjectCfg, RigidObjectCollectionCfg
 
+import isaacsim.core.utils.prims as prim_utils
+from isaaclab.sim.utils.stage import get_current_stage
+
 
 # Low-level locomotion env for Go2 (velocity / rough terrain)
 from isaaclab_tasks.manager_based.locomotion.velocity.config.go2_nav.rough_env_cfg import (
@@ -72,7 +75,7 @@ class EventCfg:
     # One-time static obstacle placement per env at startup
     randomize_obstacles_static = EventTerm(
         func=custom_events.randomize_obstacles_static_startup,
-        mode="startup",
+        mode="reset",
         params={
             "inner_radius": 1.0,   # larger than robot spawn radius (0.5)
             "outer_radius": 3.0,
@@ -204,7 +207,7 @@ class RewardsCfg:
     # Penalize heading error so the robot turns to face the goal heading.
     orientation_tracking = RewTerm(
         func=nav_mdp.heading_command_error_abs,
-        weight=-1.0,
+        weight=-0.5,
         params={"command_name": "pose_command"},
     )
 
