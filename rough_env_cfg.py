@@ -35,12 +35,7 @@ from . import custom_obs, custom_rewards, commands
 import math
 
 # How “busy” the env can be.
-MAX_OBSTACLES_PER_ENV = 3        # bump this later to 5, 8, ...
-OBSTACLE_SIZE = (0.4, 0.4, 0.4)  # (x, y, z) in meters
-OBSTACLE_HEIGHT = OBSTACLE_SIZE[2]
-NUM_OBSTACLES = 4  # <-- bump this up later when your nav policy gets better
-
-
+NUMBER_OF_OBSTACLES = 1
 
 
 
@@ -196,7 +191,7 @@ class NavSceneCfg(BaseSceneCfg):
                 # this doesn't exist on RigidObjectCfg
                 # activate_contact_sensors=True,
             )
-            for i in range(4)
+            for i in range(NUMBER_OF_OBSTACLES)
         }
     )
 

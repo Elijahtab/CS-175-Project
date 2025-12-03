@@ -8,14 +8,45 @@ from isaaclab.utils import math as math_utils
 import isaaclab.envs.mdp as mdp
 import isaaclab_tasks.manager_based.navigation.mdp as nav_mdp
 
+def motion_shape_penalty(
+    env: ManagerBasedRLEnv,
+    speed_deadzone: float = 0.05,
+    lateral_weight: float = 1.0,
+    backward_weight: float = 1.0,
+) -> torch.Tensor:
+    """
+    Pure penalty shaping for 'bad' motion patterns:
 
+    - 0 when nearly still.
+    - 0 when moving purely forward in body frame.
+    - < 0 when moving sideways and/or backwards.
 
-def forward_vs_lateral_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
-    base_lin_vel = mdp.base_lin_vel(env)       # [N, 3]
-    vx = base_lin_vel[:, 0]
-    vy = base_lin_vel[:, 1]
-    # Encourage forward vx, discourage |vy|
-    return torch.clamp(vx, min=0.0) - 0.5 * torch.abs(vy)
+    Returns: [num_envs] tensor of rewards in [- (lateral_weight+backward_weight), 0].
+    """
+    base_lin_vel = mdp.base_lin_vel(env)   # [N, 3], body frame
+    vx = base_lin_vel[:, 0]                # forward/back
+    vy = base_lin_vel[:, 1]                # lateral
+
+    # Total horizontal speed
+    speed = torch.sqrt(vx * vx + vy * vy)  # [N]
+    eps = 1e-6
+    speed_safe = speed + eps
+
+    # Fraction of speed that is lateral: |vy| / speed
+    frac_lateral = torch.abs(vy) / speed_safe               # [N] in [0, 1]
+
+    # Fraction that points backwards: max( -vx / speed, 0 )
+    backward_frac = torch.clamp(-vx / speed_safe, min=0.0)  # [N] in [0, 1]
+
+    # Only penalize if actually moving
+    moving_mask = (speed > speed_deadzone).float()          # [N]
+
+    penalty = moving_mask * (
+        lateral_weight * frac_lateral +
+        backward_weight * backward_frac
+    )  # [N], in [0, lateral_weight + backward_weight]
+
+    return -penalty
 
 
 def track_commanded_height_flat(

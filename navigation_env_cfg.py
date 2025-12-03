@@ -22,6 +22,9 @@ from isaaclab_tasks.manager_based.locomotion.velocity.config.go2_nav.rough_env_c
     UnitreeGo2RoughEnvCfg,
     NavSceneCfg,
 )
+from isaaclab_tasks.manager_based.locomotion.velocity.config.go2_nav.flat_env_cfg import (
+    UnitreeGo2FlatEnvCfg,
+)
 from isaaclab_tasks.manager_based.locomotion.velocity.config.go2_nav import commands, custom_events
 
 # Your nav-specific scene + sensor config (LiDAR, etc.)
@@ -36,14 +39,16 @@ from isaaclab_tasks.manager_based.locomotion.velocity.config.go2_nav import comm
 import isaaclab_tasks.manager_based.navigation.mdp as nav_mdp
 
 # Low-level config instance (ONLY used as a template; we never step it directly)
-LOW_LEVEL_ENV_CFG = UnitreeGo2RoughEnvCfg()
-MODEL_DIR = "/home/elijah/IsaacLab/logs/rsl_rl/unitree_go2_rough/2025-12-01_12-59-50/exported/"
+# LOW_LEVEL_ENV_CFG = UnitreeGo2RoughEnvCfg()
+LOW_LEVEL_ENV_CFG = UnitreeGo2FlatEnvCfg()
+# MODEL_DIR = "/home/elijah/IsaacLab/logs/rsl_rl/unitree_go2_rough/2025-12-01_12-59-50/exported/"
+MODEL_DIR = "/home/elijah/IsaacLab/logs/rsl_rl/unitree_go2_flat/2025-12-01_03-24-08/exported/"
 MODEL_NAME = "policy.pt"
 
 # How “busy” the env can be.
-MAX_OBSTACLES_PER_ENV = 3        # bump this later to 5, 8, ...
-OBSTACLE_SIZE = (0.4, 0.4, 0.4)  # (x, y, z) in meters
-OBSTACLE_HEIGHT = OBSTACLE_SIZE[2]
+GOAL_RADIUS = 3.0
+OBSTACLE_RADIUS = 3.0
+RESAMPLE_TIME = 8.0
 
 
 @configclass
@@ -78,7 +83,7 @@ class EventCfg:
         mode="reset",
         params={
             "inner_radius": 1.0,   # larger than robot spawn radius (0.5)
-            "outer_radius": 3.0,
+            "outer_radius": OBSTACLE_RADIUS,
         },
     )
 
@@ -197,22 +202,23 @@ class RewardsCfg:
     # Fine position tracking: tightens around the goal as you get closer.
     position_tracking_fine_grained = RewTerm(
         func=nav_mdp.position_command_error_tanh,
-        weight=1.0,
+        weight=5,
         params={
             "std": 0.2,                # narrow basin
             "command_name": "pose_command",
         },
     )
 
-    # Penalize heading error so the robot turns to face the goal heading.
-    orientation_tracking = RewTerm(
-        func=nav_mdp.heading_command_error_abs,
-        weight=-0.1,
-        params={"command_name": "pose_command"},
-    )
+    # # Penalize heading error so the robot turns to face the goal heading.
+    # orientation_tracking = RewTerm(
+    #     func=nav_mdp.heading_command_error_abs,
+    #     weight=-0.1,
+    #     params={"command_name": "pose_command"},
+    # )
 
     # Optional: small alive bonus to encourage longer survival
     # alive_bonus = RewTerm(func=mdp.is_alive, weight=1.0)
+    # alive_penalty = RewTerm(func=mdp.is_alive, weight=-0.1)
 
     # goal_proximity = RewTerm(
     #     func=custom_rewards.goal_proximity_exp,
@@ -223,22 +229,25 @@ class RewardsCfg:
     #     },
     # )
 
-    # straight-line walking reward (penalizes crab-walk)
-    straight_progress = RewTerm(
-        func=custom_rewards.forward_vs_lateral_reward,
-        weight=0.2,  # start here, tune
+    # lateral walking penalty (penalizes crab-walk)
+    lateral_penalty = RewTerm(
+        func=custom_rewards.motion_shape_penalty,
+        weight=-0.05,  # start here, tune
+        params={
+            "speed_deadzone": 0.05,
+        },
     )
 
     # LiDAR-based obstacle clearance reward
-    obstacle_clearance = RewTerm(
-        func=custom_rewards.obstacle_clearance_reward,
-        weight=0.05,  # start small; tune later
-        params={
-            "sensor_cfg": SceneEntityCfg("lidar"),
-            "min_clearance": 0.25,
-            "max_distance": 1.5,
-        },
-    )
+    # obstacle_clearance = RewTerm(
+    #     func=custom_rewards.obstacle_clearance_reward,
+    #     weight=0.05,  # start small; tune later
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg("lidar"),
+    #         "min_clearance": 0.25,
+    #         "max_distance": 1.5,
+    #     },
+    # )
 
 
 
@@ -250,12 +259,12 @@ class CommandsCfg:
     pose_command = nav_mdp.UniformPose2dCommandCfg(
         asset_name="robot",
         simple_heading=False,
-        resampling_time_range=(8.0, 8.0),  # goal fixed for each episode here
+        resampling_time_range=(RESAMPLE_TIME, RESAMPLE_TIME),  # goal fixed for each episode here
         debug_vis=True,
         # Stage 1: flat world with no obstacles, moderate workspace around origin.
         ranges=nav_mdp.UniformPose2dCommandCfg.Ranges(
-            pos_x=(-3.0, 3.0),
-            pos_y=(-3.0, 3.0),
+            pos_x=(-GOAL_RADIUS, GOAL_RADIUS),
+            pos_y=(-GOAL_RADIUS, GOAL_RADIUS),
             heading=(-math.pi, math.pi),
         ),
     )
