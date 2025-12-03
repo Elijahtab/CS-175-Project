@@ -223,7 +223,13 @@ class RewardsCfg:
     #     },
     # )
 
-    # NEW: LiDAR-based obstacle clearance reward
+    # straight-line walking reward (penalizes crab-walk)
+    straight_progress = RewTerm(
+        func=custom_rewards.forward_vs_lateral_reward,
+        weight=0.2,  # start here, tune
+    )
+
+    # LiDAR-based obstacle clearance reward
     obstacle_clearance = RewTerm(
         func=custom_rewards.obstacle_clearance_reward,
         weight=0.05,  # start small; tune later

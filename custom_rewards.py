@@ -2,6 +2,21 @@ import torch
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils.math import euler_xyz_from_quat, wrap_to_pi, quat_apply_inverse
 import isaaclab_tasks.manager_based.locomotion.velocity.config.go2_nav.custom_obs as custom_obs
+import math
+from isaaclab.envs import ManagerBasedRLEnv
+from isaaclab.utils import math as math_utils
+import isaaclab.envs.mdp as mdp
+import isaaclab_tasks.manager_based.navigation.mdp as nav_mdp
+
+
+
+def forward_vs_lateral_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
+    base_lin_vel = mdp.base_lin_vel(env)       # [N, 3]
+    vx = base_lin_vel[:, 0]
+    vy = base_lin_vel[:, 1]
+    # Encourage forward vx, discourage |vy|
+    return torch.clamp(vx, min=0.0) - 0.5 * torch.abs(vy)
+
 
 def track_commanded_height_flat(
     env,
