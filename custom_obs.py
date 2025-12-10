@@ -4,6 +4,7 @@ from isaaclab.envs import ManagerBasedRLEnv
 import isaaclab.utils.math as math_utils  # Contains the crucial conversion tools
 import isaaclab.envs.mdp as mdp
 import math
+import random
 
 #New imports for A*:
 import heapq
@@ -531,44 +532,48 @@ def lookahead_hint(
     max_lookahead_distance: float = 4.0,
     obstacle_inflation: float = 0.35,
     max_astar_steps: int = 8192,
+    # --- new knobs (safe defaults) ---
+    hint_update_interval: int = 3,
+    los_update_interval: int = 3,
+    waypoint_reach_radius: Optional[float] = None,
 ) -> torch.Tensor:
     """Return [dx, dy, path_progress, hint_active] for each env.
 
     Heavy work on CPU, output on GPU.
+    The global plan + occupancy is still built only when replanning.
+    Per-step hint extraction is throttled and uses incremental progress.
     """
-    # ---- output stays on GPU ----
     device_out = env.device
     num_envs = env.num_envs
-    out = torch.zeros((num_envs, 4), device=cpu, dtype=torch.float32)
-
-    #TODO: WHEN UPGRADING TO 4D LOOKAHEAD (plus hint):
-    # 5 dims: dx, dy, path_progress, detour_norm, hint_active
-    # out = torch.zeros((num_envs, 5), device=device, dtype=torch.float32)
-
-    # ---- heavy work device ----
     cpu = torch.device("cpu")
+
+    # Default reach radius: a bit larger than cell size to avoid stalling
+    if waypoint_reach_radius is None:
+        waypoint_reach_radius = max(grid_resolution * 1.5, 0.30)
+
+    # CPU output buffer
+    out_cpu = torch.zeros((num_envs, 4), device=cpu, dtype=torch.float32)
 
     scene = env.scene
     if "robot" not in scene.keys() or "obstacles" not in scene.keys():
-        return out
+        return out_cpu.to(device_out)
 
     robot = scene["robot"]
     obstacles = scene["obstacles"]
 
-    # Keep full base position for debug draw (can remain on GPU; debug fn .cpu()s anyway)
+    # Keep full base position for debug draw
     base_pos_w_full = robot.data.root_pos_w[:, :3]  # (N, 3)
 
     # Move planning inputs to CPU
-    base_pos_w = robot.data.root_pos_w[:, :2].to(cpu)     # (N, 2)
-    base_quat_w = robot.data.root_quat_w.to(cpu)          # (N, 4)
+    base_pos_w = robot.data.root_pos_w[:, :2].to(cpu)          # (N, 2)
+    base_quat_w = robot.data.root_quat_w.to(cpu)               # (N, 4)
 
     goal_xy_world = _get_pose_command_goal_xy_world(env, robot).to(cpu)  # (N, 2)
     obs_xy_all_world = obstacles.data.object_link_pose_w[:, :, :2].to(cpu)  # (N, num_obs, 2)
 
-    # Origins (only used for debug in your current code)
-    env_origins_xy = env.scene.env_origins[:, :2].to(cpu)  # noqa: F841
+    env_origins_xy = env.scene.env_origins[:, :2].to(cpu)
 
-    # If you later want true env-frame math, subtract origins here.
+    # env-frame math
     base_pos_env = base_pos_w - env_origins_xy
     goal_xy_env = goal_xy_world - env_origins_xy
     obs_xy_all_env = obs_xy_all_world - env_origins_xy.unsqueeze(1)
@@ -584,14 +589,25 @@ def lookahead_hint(
             "seg_lens": [None] * num_envs,
             "cum_lens": [None] * num_envs,
             "progress_idx": torch.zeros(num_envs, dtype=torch.long, device=cpu),
-
+            # throttling + cached hint
+            "step_count": 0,
+            "last_hint_cpu": torch.zeros((num_envs, 4), device=cpu, dtype=torch.float32),
+            "last_hint_valid": torch.zeros(num_envs, dtype=torch.bool, device=cpu),
         }
 
     cache = env._lookahead_cache
-    occ_grids: List[Optional[List[List[bool]]]] = cache["occ_grids"]
-    last_goal_xy: torch.Tensor = cache["last_goal_xy"]
-    paths: List[Optional[List[Tuple[float, float]]]] = cache["paths"]
-    path_total_len: torch.Tensor = cache["path_total_len"]
+
+    occ_grids = cache["occ_grids"]
+    last_goal_xy = cache["last_goal_xy"]
+    paths = cache["paths"]
+    path_total_len = cache["path_total_len"]
+
+    # ---- step counter for throttling ----
+    cache["step_count"] += 1
+    step_count = int(cache["step_count"])
+
+    do_hint_update = (step_count % max(1, hint_update_interval) == 0)
+    do_los_update = (step_count % max(1, los_update_interval) == 0)
 
     # Replan only when the goal moves significantly, or when we don't have a path yet
     goal_delta = torch.linalg.norm(goal_xy_env - last_goal_xy, dim=1)
@@ -602,6 +618,7 @@ def lookahead_hint(
         if paths[env_idx] is None:
             replan_ids.add(env_idx)
 
+    # ---- replanning ----
     for env_idx in replan_ids:
         start = tuple(float(v) for v in base_pos_env[env_idx].tolist())
         goal = tuple(float(v) for v in goal_xy_env[env_idx].tolist())
@@ -633,145 +650,171 @@ def lookahead_hint(
         paths[env_idx] = path
         last_goal_xy[env_idx] = goal_xy_env[env_idx]
 
+        # Precompute tensors + lengths once per new path
         if path is not None and len(path) >= 2:
-            pt = torch.tensor(path, dtype=torch.float32, device=cpu)
-            seg_vecs = pt[1:] - pt[:-1]
-            seg_lens = torch.linalg.norm(seg_vecs, dim=1)
-            total_len = float(seg_lens.sum().item())
+            pt = torch.tensor(path, dtype=torch.float32, device=cpu)  # (P, 2)
+            seg = torch.linalg.norm(pt[1:] - pt[:-1], dim=1)          # (P-1,)
+            cum = torch.cat([torch.zeros(1, device=cpu), torch.cumsum(seg, dim=0)])  # (P,)
+
+            total_len = float(seg.sum().item())
+            cache["path_tensors"][env_idx] = pt
+            cache["seg_lens"][env_idx] = seg
+            cache["cum_lens"][env_idx] = cum
+            cache["progress_idx"][env_idx] = 0
+            path_total_len[env_idx] = max(total_len, 1e-6)
         else:
-            total_len = 0.0
+            cache["path_tensors"][env_idx] = None
+            cache["seg_lens"][env_idx] = None
+            cache["cum_lens"][env_idx] = None
+            cache["progress_idx"][env_idx] = 0
+            path_total_len[env_idx] = 1e-6
 
-        pt = torch.tensor(path, dtype=torch.float32, device=cpu)
-        seg = torch.linalg.norm(pt[1:] - pt[:-1], dim=1)
-        cum = torch.cat([torch.zeros(1), torch.cumsum(seg, dim=0)])
-        cache["path_tensors"][env_idx] = pt
-        cache["seg_lens"][env_idx] = seg
-        cache["cum_lens"][env_idx] = cum
-        cache["progress_idx"][env_idx] = 0
+        # Force hint refresh for this env
+        cache["last_hint_valid"][env_idx] = False
 
-        path_total_len[env_idx] = max(total_len, 1e-6)
-
+    # Write back cache basics
     cache["last_goal_xy"] = last_goal_xy
     cache["paths"] = paths
     cache["path_total_len"] = path_total_len
     cache["occ_grids"] = occ_grids
 
+    # ---- fast path: reuse cached hint ----
+    # If we are not updating hints this call, just reuse last values
+    # (still cheap to copy to GPU + apply your flicker mask)
+    if not do_hint_update:
+        out_cpu = cache["last_hint_cpu"]
+        out_gpu = out_cpu.to(device_out)
+
+        hint_prob = 0.8
+        mask = torch.bernoulli(torch.full((num_envs, 1), hint_prob, device=device_out))
+        return out_gpu * mask
+
     # ---- compute hints from cached paths (CPU) ----
+    last_hint_cpu = cache["last_hint_cpu"]
+    last_hint_valid = cache["last_hint_valid"]
+    progress_idx = cache["progress_idx"]
+
     for env_idx in range(num_envs):
         path = paths[env_idx]
         if not path or len(path) < 2:
             continue
 
+        pt = cache["path_tensors"][env_idx]
+        cum = cache["cum_lens"][env_idx]
         total_len = float(path_total_len[env_idx].item())
-        if total_len <= 1e-6:
-            continue
-
-        path_tensor = cache["path_tensors"][env_idx]  # (P, 2)
-        robot_xy = base_pos_env[env_idx]                                   # (2,)
-
-        seg_lens = cache["seg_lens"][env_idx]
-        _ = torch.clamp(seg_lens.sum(), min=1e-6)  # curr_total_len (unused beyond debug)
-
-        diff = path_tensor - robot_xy.unsqueeze(0)
-        dists_sq = torch.sum(diff * diff, dim=1)
-        closest_idx = int(torch.argmin(dists_sq).item())
-
-        if closest_idx == 0:
-            s_travelled = 0.0
-        else:
-            s_travelled = float(seg_lens[:closest_idx].sum().item())
-
-        path_progress = max(0.0, min(1.0, s_travelled / total_len))
-
-        #TODO: WHEN UPGRADING TO 4D LOOKAHEAD (plus hint):
-        # # --- UPGRADE FOR 4D: compute detour amount = (remaining path length - straight-line distance) ---
-        # # Remaining path length from robot to goal along the A* path
-        # # TODO: After choosing final path progress method, ensure this matches
-        # remaining_len = max(float(total_len - s_travelled.item()), 0.0)
-
-        # # Straight-line distance from robot to goal
-        # goal_xy_env = goal_xy[env_idx]  # (2,)
-        # straight_dist = torch.linalg.norm(goal_xy_env - robot_xy)
-
-        # # Difference (how much longer the optimal path is than a straight line)
-        # detour = remaining_len - float(straight_dist.item())
-
-        # # Normalize by map_half_extent and clamp to [0, 1]
-        # detour_norm = detour / map_half_extent
-        # detour_norm = max(0.0, min(1.0, detour_norm))
-        # detour_norm = torch.tensor(detour_norm, device=device, dtype=torch.float32)
-
         occ_grid = occ_grids[env_idx]
 
-        best_idx: Optional[int] = None
-        best_eucl: float = 0.0
+        if pt is None or cum is None or total_len <= 1e-6:
+            continue
 
-        if occ_grid is not None:
-            for j in range(closest_idx + 1, path_tensor.shape[0]):
-                cand_xy = path_tensor[j]
-                eucl = float(torch.linalg.norm(cand_xy - robot_xy).item())
+        P = pt.shape[0]
+        robot_xy = base_pos_env[env_idx]
 
-                if eucl < min_lookahead_distance or eucl > max_lookahead_distance:
+        # 1) Incremental progress update:
+        # Advance index while robot is close enough to the next waypoint.
+        idx = int(progress_idx[env_idx].item())
+        idx = max(0, min(idx, P - 1))
+
+        # Small loop but only local forward steps
+        while idx + 1 < P:
+            d_next = torch.linalg.norm(pt[idx + 1] - robot_xy).item()
+            if d_next <= waypoint_reach_radius:
+                idx += 1
+            else:
+                break
+
+        progress_idx[env_idx] = idx
+
+        # 4) Use cum_lens for path progress
+        s_travelled = float(cum[idx].item())
+        path_progress = max(0.0, min(1.0, s_travelled / total_len))
+
+        # Candidate search window based on path-distance-ahead
+        # (not Euclidean, so it’s stable and cheap via cum)
+        best_idx = None
+
+        # 3) Simplified LOS:
+        # Only attempt LOS occasionally. Otherwise choose the first
+        # waypoint that satisfies the path-distance band.
+        if do_los_update and occ_grid is not None:
+            # Farthest visible within [min, max] path-distance-ahead
+            for j in range(idx + 1, P):
+                ahead = float((cum[j] - cum[idx]).item())
+                if ahead < min_lookahead_distance:
                     continue
-
-                if _has_line_of_sight(occ_grid, robot_xy, cand_xy, map_half_extent, grid_resolution):
-                    if eucl > best_eucl:
-                        best_eucl = eucl
-                        best_idx = j
-
-        if best_idx is not None:
-            look_idx = best_idx
-        else:
-            look_idx = closest_idx
-            travelled = 0.0
-            for j in range(closest_idx, path_tensor.shape[0] - 1):
-                seg_len = float(torch.linalg.norm(path_tensor[j + 1] - path_tensor[j]).item())
-                travelled += seg_len
-                look_idx = j + 1
-                if travelled >= min_lookahead_distance:
+                if ahead > max_lookahead_distance:
                     break
 
-        look_xy = path_tensor[look_idx]
+                cand_xy = pt[j]
+                if _has_line_of_sight(occ_grid, robot_xy, cand_xy, map_half_extent, grid_resolution):
+                    best_idx = j  # keep pushing farther while visible
+        else:
+            # No LOS: choose the candidate within the path-ahead band
+            # that is farthest in Euclidean distance from the robot.
+            best_score = -1.0
+            for j in range(idx + 1, P):
+                ahead = float((cum[j] - cum[idx]).item())
+                if ahead < min_lookahead_distance:
+                    continue
+                if ahead > max_lookahead_distance:
+                    break
+
+                cand_xy = pt[j]
+                eucl = float(torch.linalg.norm(cand_xy - robot_xy).item())
+
+                # Optional: soft gate to avoid tiny sideways nudges
+                if eucl < 0.5 * min_lookahead_distance:
+                    continue
+
+                # Score: prioritize geometric reach
+                score = eucl
+
+                if score > best_score:
+                    best_score = score
+                    best_idx = j
+
+        # Fallback if nothing found in band
+        if best_idx is None:
+            best_idx = min(idx + 1, P - 1)
+
+        look_xy = pt[best_idx]
 
         # Debug draw (unchanged semantics)
         if ENABLE_LOOKAHEAD_DEBUG_DRAW and int(env_idx) == int(DEBUG_LOOKAHEAD_ENV_ID):
-            # try:
-            origin_xy = env_origins_xy[env_idx]  # (2,)
-
-            # Convert ENV coords back to WORLD for visualization
-            path_world_xy = path_tensor + origin_xy            # (P, 2)
-            lookahead_world_xy = look_xy + origin_xy           # (2,)
-
+            origin_xy = env_origins_xy[env_idx]
+            path_world_xy = pt + origin_xy
+            lookahead_world_xy = look_xy + origin_xy
             debug_draw_path_and_lookahead(
                 path_world_xy=path_world_xy,
-                base_pos_world=base_pos_w_full[env_idx],       # (3,) already world
+                base_pos_world=base_pos_w_full[env_idx],
                 lookahead_world_xy=lookahead_world_xy,
             )
-            # except Exception:
-            #     pass
 
-        delta_world = look_xy - robot_xy
+        # delta in ENV frame
+        delta_env = look_xy - robot_xy
 
-        yaw = _yaw_from_quat(base_quat_w[env_idx])  # CPU scalar tensor
+        yaw = _yaw_from_quat(base_quat_w[env_idx])
         cos_y = torch.cos(-yaw)
         sin_y = torch.sin(-yaw)
 
-        dx_b = (cos_y * delta_world[0] - sin_y * delta_world[1]).item()
-        dy_b = (sin_y * delta_world[0] + cos_y * delta_world[1]).item()
+        dx_b = (cos_y * delta_env[0] - sin_y * delta_env[1]).item()
+        dy_b = (sin_y * delta_env[0] + cos_y * delta_env[1]).item()
 
-        # Write small scalars into GPU output
-        out[env_idx, 0] = float(dx_b)
-        out[env_idx, 1] = float(dy_b)
-        out[env_idx, 2] = float(path_progress)
-        out[env_idx, 3] = 1.0
-        #TODO: WHEN UPGRADING TO 4D LOOKAHEAD (plus hint):
-        # out[env_idx, 3] = detour_norm        # normalized detour amount
-        # out[env_idx, 4] = 1.0                # hint active
+        out_cpu[env_idx, 0] = float(dx_b)
+        out_cpu[env_idx, 1] = float(dy_b)
+        out_cpu[env_idx, 2] = float(path_progress)
+        out_cpu[env_idx, 3] = 1.0
 
-    # ---- optional flicker mask (MUST be on GPU) ----
-    out_gpu = out.to(device_out)
+        last_hint_valid[env_idx] = True
 
-    # keep your mask on GPU
+    # Update cached hint for reuse on skipped intervals
+    cache["progress_idx"] = progress_idx
+    cache["last_hint_cpu"] = out_cpu
+    cache["last_hint_valid"] = last_hint_valid
+
+    # ---- move to GPU + your flicker mask ----
+    out_gpu = out_cpu.to(device_out)
+
     hint_prob = 0.8
     mask = torch.bernoulli(torch.full((num_envs, 1), hint_prob, device=device_out))
     out_gpu = out_gpu * mask
