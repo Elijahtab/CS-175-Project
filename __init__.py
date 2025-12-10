@@ -20,7 +20,7 @@ gym.register(
     },
 )
 
-# ★ Flat navigation env 
+#FLAT NON-NAV ENV
 gym.register(
     id="Isaac-Nav-Go2-Flat-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",

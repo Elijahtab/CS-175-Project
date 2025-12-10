@@ -10,22 +10,21 @@ import heapq
 from typing import List, Optional, Tuple
 
 
-# TODO: ADD DEBUG DRAWING OF PATH + LOOKAHEAD POINT
-# # Optional: debug drawing of global A* path + lookahead
-# try:
-#     from isaacsim.util.debug_draw import _debug_draw
-# except Exception:
-#     # In pure headless / IsaacLab-python builds this may not exist
-#     _debug_draw = None
+# Optional: debug drawing of global A* path + lookahead
+try:
+    from isaacsim.util.debug_draw import _debug_draw
+except Exception:
+    # In pure headless / IsaacLab-python builds this may not exist
+    _debug_draw = None
 
-# _DEBUG_DRAW = None
+_DEBUG_DRAW = None
 
-# # Toggle this to enable/disable visualization globally
+# Toggle this to enable/disable visualization globally
 # ENABLE_LOOKAHEAD_DEBUG_DRAW: bool = False
 # DEBUG_LOOKAHEAD_ENV_ID: int = 0  # which env index to visualize (usually 0)
-# # For toggling this on:
-# ENABLE_LOOKAHEAD_DEBUG_DRAW = True
-# DEBUG_LOOKAHEAD_ENV_ID = 0   # whichever env index you care about
+# For toggling this on:
+ENABLE_LOOKAHEAD_DEBUG_DRAW = False
+DEBUG_LOOKAHEAD_ENV_ID = 0   # whichever env index you care about
 
 
 
@@ -193,84 +192,83 @@ def lidar_scan_normalized(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg) ->
 
 
 
-# TODO: ADD DEBUG DRAWING OF PATH + LOOKAHEAD POINT
-# def _get_debug_draw():
-#     """Lazily acquire the global debug-draw interface from Isaac Sim."""
-#     global _DEBUG_DRAW
-#     if _debug_draw is None:
-#         return None
-#     if _DEBUG_DRAW is None:
-#         try:
-#             _DEBUG_DRAW = _debug_draw.acquire_debug_draw_interface()
-#         except Exception:
-#             _DEBUG_DRAW = None
-#     return _DEBUG_DRAW
+def _get_debug_draw():
+    """Lazily acquire the global debug-draw interface from Isaac Sim."""
+    global _DEBUG_DRAW
+    if _debug_draw is None:
+        return None
+    if _DEBUG_DRAW is None:
+        try:
+            _DEBUG_DRAW = _debug_draw.acquire_debug_draw_interface()
+        except Exception:
+            _DEBUG_DRAW = None
+    return _DEBUG_DRAW
 
 
-# def debug_draw_path_and_lookahead(
-#     path_world_xy: torch.Tensor,
-#     base_pos_world: torch.Tensor,
-#     lookahead_world_xy: torch.Tensor,
-#     path_color=(0.0, 1.0, 0.0, 1.0),
-#     lookahead_color=(1.0, 0.3, 0.0, 1.0),
-#     link_color=(1.0, 1.0, 0.0, 1.0),
-#     path_width: float = 2.5,
-#     link_width: float = 2.0,
-# ):
-#     """
-#     Visualize the global A* path and lookahead using isaacsim.util.debug_draw.
+def debug_draw_path_and_lookahead(
+    path_world_xy: torch.Tensor,
+    base_pos_world: torch.Tensor,
+    lookahead_world_xy: torch.Tensor,
+    path_color=(0.0, 1.0, 0.0, 1.0),
+    lookahead_color=(1.0, 0.3, 0.0, 1.0),
+    link_color=(1.0, 1.0, 0.0, 1.0),
+    path_width: float = 2.5,
+    link_width: float = 2.0,
+):
+    """
+    Visualize the global A* path and lookahead using isaacsim.util.debug_draw.
 
-#     Args:
-#         path_world_xy:      (P, 2) tensor of [x, y] path points in world frame.
-#         base_pos_world:     (3,)   tensor of base [x, y, z] in world frame.
-#         lookahead_world_xy: (2,)   tensor of [x, y] for lookahead in world frame.
-#     """
-#     draw = _get_debug_draw()
-#     if draw is None:
-#         return
+    Args:
+        path_world_xy:      (P, 2) tensor of [x, y] path points in world frame.
+        base_pos_world:     (3,)   tensor of base [x, y, z] in world frame.
+        lookahead_world_xy: (2,)   tensor of [x, y] for lookahead in world frame.
+    """
+    draw = _get_debug_draw()
+    if draw is None:
+        return
 
-#     # If no path, just clear any existing drawings
-#     if path_world_xy.numel() == 0:
-#         try:
-#             draw.clear_lines()
-#             draw.clear_points()
-#         except Exception:
-#             pass
-#         return
+    # If no path, just clear any existing drawings
+    if path_world_xy.numel() == 0:
+        try:
+            draw.clear_lines()
+            draw.clear_points()
+        except Exception:
+            pass
+        return
 
-#     # Use base z for all points so the path lies in a horizontal plane at robot height
-#     z = float(base_pos_world[2].item())
+    # Use base z for all points so the path lies in a horizontal plane at robot height
+    z = float(base_pos_world[2].item())
 
-#     # Path points to 3D list
-#     pts_np = path_world_xy.detach().cpu().numpy()
-#     path_pts_3d = [(float(p[0]), float(p[1]), z) for p in pts_np]
+    # Path points to 3D list
+    pts_np = path_world_xy.detach().cpu().numpy()
+    path_pts_3d = [(float(p[0]), float(p[1]), z) for p in pts_np]
 
-#     # Lookahead point (3D)
-#     lx = float(lookahead_world_xy[0].item())
-#     ly = float(lookahead_world_xy[1].item())
-#     lookahead_pt_3d = [(lx, ly, z)]
+    # Lookahead point (3D)
+    lx = float(lookahead_world_xy[0].item())
+    ly = float(lookahead_world_xy[1].item())
+    lookahead_pt_3d = [(lx, ly, z)]
 
-#     # Robot base (3D)
-#     bx = float(base_pos_world[0].item())
-#     by = float(base_pos_world[1].item())
-#     base_pt_3d = [(bx, by, z)]
+    # Robot base (3D)
+    bx = float(base_pos_world[0].item())
+    by = float(base_pos_world[1].item())
+    base_pt_3d = [(bx, by, z)]
 
-#     # Clear previous drawings so we only see the current step
-#     try:
-#         draw.clear_lines()
-#         draw.clear_points()
-#     except Exception:
-#         # If something goes wrong, don't crash the sim
-#         pass
+    # Clear previous drawings so we only see the current step
+    try:
+        draw.clear_lines()
+        draw.clear_points()
+    except Exception:
+        # If something goes wrong, don't crash the sim
+        pass
 
-#     # Draw the path as a spline (API from Isaac Sim Debug Drawing extension docs)
-#     draw.draw_lines_spline(path_pts_3d, path_color, float(path_width), False)
+    # Draw the path as a spline (API from Isaac Sim Debug Drawing extension docs)
+    draw.draw_lines_spline(path_pts_3d, path_color, float(path_width), False)
 
-#     # Draw lookahead as a point
-#     draw.draw_points(lookahead_pt_3d, [lookahead_color], [10.0])
+    # Draw lookahead as a point
+    draw.draw_points(lookahead_pt_3d, [lookahead_color], [10.0])
 
-#     # Draw a line from robot base to lookahead
-#     draw.draw_lines(base_pt_3d, lookahead_pt_3d, [link_color], [float(link_width)])
+    # Draw a line from robot base to lookahead
+    draw.draw_lines(base_pt_3d, lookahead_pt_3d, [link_color], [float(link_width)])
 
 
 def _yaw_from_quat(q: torch.Tensor) -> torch.Tensor:
@@ -487,6 +485,44 @@ def _has_line_of_sight(
     return True
 
 
+def _get_pose_command_goal_xy_world(env: ManagerBasedRLEnv, robot) -> torch.Tensor:
+    """Best-effort retrieval of a stable world-frame goal for planning.
+
+    Preference order:
+    1) Read a world-goal tensor directly from the pose command term (if exposed).
+    2) Reconstruct a world goal from the body-frame tracking command as:
+         goal_w = base_pos_w + R(yaw) * cmd_b_xy
+    """
+    # 1) Try to access the underlying command term buffer (names may differ across Isaac Lab versions)
+    term_dict = getattr(env.command_manager, "command_terms", {})
+    term = term_dict.get("pose_command", None)
+
+    if term is not None:
+        # These attribute names are guesses; keep the list broad but safe.
+        for attr in ("goal_pos_w", "target_pos_w", "command_w", "command_pos_w", "pose_w", "pos_w"):
+            if hasattr(term, attr):
+                val = getattr(term, attr)
+                if isinstance(val, torch.Tensor) and val.ndim == 2 and val.shape[1] >= 2:
+                    return val[:, :2]
+
+    # 2) Fallback: assume get_command returns a body-frame XY tracking vector
+    cmd_b = env.command_manager.get_command("pose_command")
+    base_pos_w = robot.data.root_pos_w[:, :2]
+    yaw = _yaw_from_quat(robot.data.root_quat_w)
+
+    cos_y = torch.cos(yaw)
+    sin_y = torch.sin(yaw)
+
+    dx_b = cmd_b[:, 0]
+    dy_b = cmd_b[:, 1]
+
+    dx_w = cos_y * dx_b - sin_y * dy_b
+    dy_w = sin_y * dx_b + cos_y * dy_b
+
+    return base_pos_w + torch.stack([dx_w, dy_w], dim=1)
+
+
+
 def lookahead_hint(
     env: ManagerBasedRLEnv,
     map_half_extent: float = 7.0,
@@ -511,7 +547,7 @@ def lookahead_hint(
     # out = torch.zeros((num_envs, 5), device=device, dtype=torch.float32)
 
     scene = env.scene
-    if "robot" not in scene or "obstacles" not in scene:
+    if "robot" not in scene.keys() or "obstacles" not in scene.keys():
         return out
 
     robot = scene["robot"]
@@ -524,9 +560,9 @@ def lookahead_hint(
     base_pos_w = robot.data.root_pos_w[:, :2]  # (N, 2)
     base_quat_w = robot.data.root_quat_w       # (N, 4)
 
-    # Goal pose from command buffer (x, y, heading) in world frame
-    pose_cmd = mdp.generated_commands(env, command_name="pose_command")
-    goal_xy_world = pose_cmd[:, :2]                    # (N, 2)
+    # Goal pose for planning (stable world-frame if possible)
+    goal_xy_world = _get_pose_command_goal_xy_world(env, robot)
+
 
     # Obstacles positions in world frame
     obs_xy_all_world = obstacles.data.object_link_pose_w[:, :, :2]  # (N, num_obs, 2)
@@ -534,9 +570,9 @@ def lookahead_hint(
     # --- Convert to per-env "environment frame" (subtract env origins) ---
     env_origins_xy = env.scene.env_origins[:, :2].to(device=device)  # (N, 2)
 
-    base_pos_env = base_pos_w - env_origins_xy                       # (N, 2)
-    goal_xy_env = goal_xy_world - env_origins_xy                     # (N, 2)
-    obs_xy_all_env = obs_xy_all_world - env_origins_xy.unsqueeze(1)  # (N, num_obs, 2)
+    base_pos_env = base_pos_w   # (N, 2)
+    goal_xy_env = goal_xy_world   # (N, 2)
+    obs_xy_all_env = obs_xy_all_world # (N, num_obs, 2)
 
     # Initialize / access cache on env
     if not hasattr(env, "_lookahead_cache"):
@@ -646,11 +682,11 @@ def lookahead_hint(
         else:
             s_travelled = seg_lens[:closest_idx].sum()
 
-        distance1 = s_travelled / total_len
-        distance2 = 1.0 - (curr_total_len / total_len)
-        distance3 = 1.0 - (curr_total_len - s_travelled) / total_len
+        # distance1 = s_travelled / total_len
+        # distance2 = 1.0 - (curr_total_len / total_len)
+        # distance3 = 1.0 - (curr_total_len - s_travelled) / total_len
 
-        print(f"----------\CHECKING THE WAYS TO COMPUTE PROGRESS:\ntotal_len: {total_len}\ncurr_total_len: {curr_total_len}\ns_travelled: {s_travelled}\ndistance1: {distance1:.4f}\ndistance2: {distance2:.4f}\ndistance3: {distance3:.4f}\n----------")
+        # print(f"----------\CHECKING THE WAYS TO COMPUTE PROGRESS:\ntotal_len: {total_len}\ncurr_total_len: {curr_total_len}\nclosest_id: {closest_idx}\ns_travelled: {s_travelled}\ndistance1: {distance1:.4f}\ndistance2: {distance2:.4f}\ndistance3: {distance3:.4f}\n----------")
 
         # TODO: Choose the actual best way to compute path progress
         path_progress = torch.clamp(s_travelled / total_len, 0.0, 1.0)
@@ -709,21 +745,20 @@ def lookahead_hint(
 
         look_xy = path_tensor[look_idx]  # (2,)
 
-        # TODO: ADD DEBUG DRAWING OF PATH + LOOKAHEAD POINT
-        # # --- Debug visualization (only if enabled, and only for one env) ---
-        # if ENABLE_LOOKAHEAD_DEBUG_DRAW and int(env_idx) == int(DEBUG_LOOKAHEAD_ENV_ID):
-        #     try:
-        #         origin_xy = env_origins_xy[env_idx]           # (2,)
-        #         path_world_xy = path_tensor + origin_xy       # (P, 2)
-        #         lookahead_world_xy = look_xy + origin_xy      # (2,)
-        #         debug_draw_path_and_lookahead(
-        #             path_world_xy=path_world_xy,
-        #             base_pos_world=base_pos_w_full[env_idx],
-        #             lookahead_world_xy=lookahead_world_xy,
-        #         )
-        #     except Exception:
-        #         # Never let debug drawing crash the sim or training
-        #         pass
+        # --- Debug visualization (only if enabled, and only for one env) ---
+        if ENABLE_LOOKAHEAD_DEBUG_DRAW and int(env_idx) == int(DEBUG_LOOKAHEAD_ENV_ID):
+            try:
+                origin_xy = env_origins_xy[env_idx]           # (2,)
+                path_world_xy = path_tensor     # (P, 2)
+                lookahead_world_xy = look_xy      # (2,)
+                debug_draw_path_and_lookahead(
+                    path_world_xy=path_world_xy,
+                    base_pos_world=base_pos_w_full[env_idx],
+                    lookahead_world_xy=lookahead_world_xy,
+                )
+            except Exception:
+                # Never let debug drawing crash the sim or training
+                pass
 
         # World-frame delta
         delta_world = look_xy - robot_xy  # (2,)
@@ -742,6 +777,11 @@ def lookahead_hint(
         #TODO: WHEN UPGRADING TO 4D LOOKAHEAD (plus hint):
         # out[env_idx, 3] = detour_norm        # normalized detour amount
         # out[env_idx, 4] = 1.0                # hint active
+    
+    # --- Randomly disable the hint in ~20% of envs ---
+    hint_prob = 0.8
+    mask = torch.bernoulli(torch.full((num_envs, 1), hint_prob, device=device))
+    out = out * mask
 
     return out
 

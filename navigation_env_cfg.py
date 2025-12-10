@@ -174,22 +174,22 @@ class ObservationsCfg:
         )
 
         # # Lookahead (placeholder for now)
-        lookahead_hint = ObsTerm(
-            func=custom_obs.lookahead_placeholder
-        )
-
-        # # REAL Lookahead hint: 3 floats (dx, dy, dist_norm), 1 binary (active flag)
         # lookahead_hint = ObsTerm(
-        #     func=custom_obs.lookahead_hint,
-        #     params={
-        #         "map_half_extent": max(GOAL_RADIUS, OBSTACLE_RADIUS) + 1.0,
-        #         "grid_resolution": 0.25,
-        #         "min_lookahead_distance": 1.0,  # lower bound
-        #         "max_lookahead_distance": 4.0,  # upper bound
-        #         "obstacle_inflation": 0.35,
-        #         "max_astar_steps": 8192,
-        #     },
+        #     func=custom_obs.lookahead_placeholder
         # )
+
+        # REAL Lookahead hint: 3 floats (dx, dy, dist_norm), 1 binary (active flag)
+        lookahead_hint = ObsTerm(
+            func=custom_obs.lookahead_hint,
+            params={
+                "map_half_extent": max(GOAL_RADIUS, OBSTACLE_RADIUS) + 1.0,
+                "grid_resolution": 0.25,
+                "min_lookahead_distance": 1.0,  # lower bound
+                "max_lookahead_distance": 4.0,  # upper bound
+                "obstacle_inflation": 0.50,
+                "max_astar_steps": 8192,
+            },
+        )
 
     # observation groups
     policy: PolicyCfg = PolicyCfg()
@@ -361,7 +361,7 @@ class NavigationEnvCfg(ManagerBasedRLEnvCfg):
         # Fix patch buffer overflow
         # Default is 5 * 2**15, but we need at least 262144
         # 10 * 2**15 = 327680 (> 262144)
-        self.sim.physx.gpu_max_rigid_patch_count = 10 * 2**16
+        self.sim.physx.gpu_max_rigid_patch_count = 10 * 2**17
 
         # Episode length is tied to the goal resampling window.
         self.episode_length_s = self.commands.pose_command.resampling_time_range[1]
