@@ -17,7 +17,7 @@ Watch
 ```
 RESUME:
 
- ./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py --task=Isaac-Nav-Go2-v0 --resume --load_run=m2 --checkpoint=model_300.pt --headless
+ ./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py --task=Isaac-Nav-Flat-Go2-v0 --resume --load_run=2025-12-02_23-18-00 --checkpoint=model_3200.pt --headless
 
 
 FLAGS:
