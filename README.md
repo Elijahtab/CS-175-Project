@@ -3,11 +3,11 @@
 This repository implements a hierarchical reinforcement learning framework for the Unitree Go2 quadruped. It provides custom environments for rough terrain locomotion and high-level navigation, designed to run as an extension within NVIDIA Isaac Lab.
 
 ## Prerequisites
-This project requires a fully functioning installation of **NVIDIA Isaac Lab.** We will omit a step-by-step guide to installation as NVIDIA themselves provides a simple installation guide.
+This project requires a fully functioning installation of **NVIDIA Isaac Lab.** We will omit a step-by-step guide to installing Isaac Lab and Sim as NVIDIA themselves provides a simple installation guide for both Windows and Linux devices. We recommend a Linux installation as our project was written for/in Linux based systems.
 - **System Requirements:** Firstly, please verify your hardware system meets the [Isaac Sim Requirements](https://docs.isaacsim.omniverse.nvidia.com/5.1.0/installation/requirements.html)
 - **Installation:** Follow the official [Issac Lab Instruction Guide w/ Pip](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/pip_installation.html)
 
-**Verification:** To confirm the installation is successful please run the examples. 
+**Verification:** To confirm the installation is successful please run the NVIDIA-provided examples. 
 
 
 ## Installation
